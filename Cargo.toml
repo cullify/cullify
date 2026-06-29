@@ -9,7 +9,7 @@ edition = "2024"
 license = "MIT"
 homepage = "https://cullify.ai/"
 repository = "https://github.com/cullify/cullify.git"
-description = "A Tauri App"
+description = "Local offline AI-assisted photo culling desktop app."
 authors = ["Simon <fzpying@gmail.com>"]
 
 [workspace.dependencies]

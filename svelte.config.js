@@ -1,5 +1,5 @@
-// Tauri doesn't have a Node.js server to do proper SSR
-// so we use adapter-static with a fallback to index.html to put the site in SPA mode
+// Tauri serves static assets from the bundled frontend, so Cullify runs as an
+// SPA with an index fallback for desktop deep links such as /cull/ or /settings/.
 // See: https://svelte.dev/docs/kit/single-page-apps
 // See: https://v2.tauri.app/start/frontend/sveltekit/ for more info
 import adapter from "@sveltejs/adapter-static";
@@ -12,6 +12,12 @@ const config = {
     adapter: adapter({
       fallback: "index.html",
     }),
+    paths: {
+      relative: false,
+    },
+    version: {
+      name: "0.1.0",
+    },
   },
 };
 
