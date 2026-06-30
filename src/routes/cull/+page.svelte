@@ -541,7 +541,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="app-shell with-inspector">
+<div class="app-shell cull-shell">
   <aside class="sidebar">
     <a class="brand" href={resolve('/')}>
       <span class="brand-mark">Cullify</span>
@@ -624,7 +624,7 @@
               清空标记
             </button>
           </div>
-          <button class="btn btn-ghost" type="button" onclick={() => void exportCurrentProject()} disabled={isExporting || isBatchUpdating}>
+          <button class="btn btn-ghost export-button" type="button" onclick={() => void exportCurrentProject()} disabled={isExporting || isBatchUpdating}>
             {isExporting ? '导出中' : '导出'}
           </button>
         </div>
@@ -677,20 +677,20 @@
           </div>
         {/if}
       </div>
+
+      {#if selectedPhoto}
+        <div class="inspector-dock">
+          <InspectorPanel
+            photo={selectedPhoto}
+            index={selectedIndex}
+            total={photos.length}
+            shortcuts={shortcutBindings}
+            onDecision={(decision) => void setDecision(decision)}
+          />
+        </div>
+      {/if}
     </section>
   </main>
-
-  <aside class="inspector">
-    {#if selectedPhoto}
-      <InspectorPanel
-        photo={selectedPhoto}
-        index={selectedIndex}
-        total={photos.length}
-        shortcuts={shortcutBindings}
-        onDecision={(decision) => void setDecision(decision)}
-      />
-    {/if}
-  </aside>
 
   <footer class="statusbar">
     <div class="side">
@@ -759,6 +759,10 @@
   .cull-main {
     display: block;
     overflow: hidden;
+  }
+
+  .cull-shell {
+    grid-template-columns: 248px minmax(0, 1fr);
   }
 
   .mode-switch {
@@ -856,13 +860,17 @@
 
   .workspace {
     display: flex;
+    height: 100%;
     min-width: 0;
+    min-height: 0;
     flex-direction: column;
     overflow: hidden;
   }
 
   .toolbar {
+    flex-wrap: wrap;
     flex-shrink: 0;
+    align-items: flex-start;
     gap: 16px;
     border-bottom: 1px solid var(--border);
     padding: 14px 24px;
@@ -871,6 +879,27 @@
   .toolbar-left,
   .toolbar-right {
     gap: 14px;
+  }
+
+  .toolbar-left {
+    flex: 0 0 auto;
+  }
+
+  .toolbar-right {
+    min-width: min(100%, 640px);
+    flex: 1 1 640px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .toolbar-right button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .export-button {
+    min-width: 56px;
+    white-space: nowrap;
   }
 
   .panel-title {
@@ -1025,14 +1054,21 @@
 
   .grid-wrap {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 16px 24px 24px;
   }
 
   .photo-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(188px, 1fr));
     gap: 10px;
+  }
+
+  .inspector-dock {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
   }
 
   .load-more {

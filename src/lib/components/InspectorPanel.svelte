@@ -57,21 +57,31 @@
   }
 </script>
 
-<section class="insp-section">
-  <p class="insp-eyebrow">当前照片 · {String(index + 1).padStart(2, '0')} / {total}</p>
-  <h2 class="insp-title">{photo.name} · {photo.title}</h2>
-  <p class="insp-sub">2026-04-27 {photo.time} · {photo.fileSize} · {photo.camera}</p>
-
-  <div class="preview" style:background={photo.palette}>
-    {#if photo.sourceUrl}
-      <img src={photo.sourceUrl} alt="" />
-    {/if}
+<section class="inspector-panel">
+  <div class="photo-strip">
+    <div class="preview" style:background={photo.palette}>
+      {#if photo.sourceUrl}
+        <img src={photo.sourceUrl} alt="" />
+      {/if}
+    </div>
+    <div class="photo-heading">
+      <p class="insp-eyebrow">当前照片 · {String(index + 1).padStart(2, '0')} / {total}</p>
+      <h2 class="insp-title">{photo.name}</h2>
+      <p class="insp-sub">{photo.title} · {photo.time} · {photo.fileSize}</p>
+      <div class="exif-chips">
+        <span>{photo.camera}</span>
+        <span>{photo.lens}</span>
+        <span>{photo.focal}</span>
+        <span>{photo.aperture}</span>
+        <span>{photo.shutter}</span>
+        <span>ISO {photo.iso}</span>
+        <span>{photo.size}</span>
+        <span>{photo.group}</span>
+      </div>
+    </div>
   </div>
-</section>
 
-<section class="insp-section">
-  <p class="insp-eyebrow">质量评分</p>
-  <div class="score-row">
+  <div class="score-panel">
     <div class="score-num">{photo.score}<small>/100</small></div>
     <div class="score-bars">
       <div class="score-bar">
@@ -96,54 +106,54 @@
       </div>
     </div>
   </div>
-</section>
 
-<section class="insp-section">
-  <p class="insp-eyebrow">分析说明</p>
-  <div class="ai-reason">{photo.reason}</div>
-</section>
-
-<section class="insp-section">
-  <p class="insp-eyebrow">EXIF 信息</p>
-  <div class="exif">
-    <div class="exif-row"><span class="k">相机</span><span class="v">{photo.camera}</span></div>
-    <div class="exif-row"><span class="k">镜头</span><span class="v">{photo.lens}</span></div>
-    <div class="exif-row"><span class="k">焦距</span><span class="v">{photo.focal}</span></div>
-    <div class="exif-row"><span class="k">光圈</span><span class="v">{photo.aperture}</span></div>
-    <div class="exif-row"><span class="k">快门</span><span class="v">{photo.shutter}</span></div>
-    <div class="exif-row"><span class="k">ISO</span><span class="v">{photo.iso}</span></div>
-    <div class="exif-row"><span class="k">尺寸</span><span class="v">{photo.size}</span></div>
-    <div class="exif-row"><span class="k">分组</span><span class="v">{photo.group}</span></div>
+  <div class="reason-panel">
+    <p class="insp-eyebrow">分析说明</p>
+    <p>{photo.reason}</p>
   </div>
-</section>
 
-<section class="insp-section">
-  <p class="insp-eyebrow">决策</p>
-  <div class="decisions">
-    <button type="button" class="dec-btn keep" onclick={() => onDecision('keep')}>保留<span>{shortcutLabel('keep')}</span></button>
-    <button type="button" class="dec-btn cull" onclick={() => onDecision('cull')}>淘汰<span>{shortcutLabel('cull')}</span></button>
-    <button type="button" class="dec-btn skip" onclick={() => onDecision(null)}>跳过<span>{shortcutLabel('skip')}</span></button>
-  </div>
-</section>
-
-<div class="kbd-hints">
-  {#each hintRows as row (row.label)}
-    <div>
-      <span>{row.label}</span>
-      <span class="key-chord">
-        {#each row.keys as key, keyIndex (`${row.label}-${key}-${keyIndex}`)}
-          {#if keyIndex > 0}<span class="key-separator">{row.separator ?? '+'}</span>{/if}
-          <span class="kbd">{displayKey(key)}</span>
-        {/each}
-      </span>
+  <div class="action-panel">
+    <div class="decisions">
+      <button type="button" class="dec-btn keep" onclick={() => onDecision('keep')}>保留<span>{shortcutLabel('keep')}</span></button>
+      <button type="button" class="dec-btn cull" onclick={() => onDecision('cull')}>淘汰<span>{shortcutLabel('cull')}</span></button>
+      <button type="button" class="dec-btn skip" onclick={() => onDecision(null)}>跳过<span>{shortcutLabel('skip')}</span></button>
     </div>
-  {/each}
-</div>
+
+    <div class="kbd-hints">
+      {#each hintRows as row (row.label)}
+        <div>
+          <span>{row.label}</span>
+          <span class="key-chord">
+            {#each row.keys as key, keyIndex (`${row.label}-${key}-${keyIndex}`)}
+              {#if keyIndex > 0}<span class="key-separator">{row.separator ?? '+'}</span>{/if}
+              <span class="kbd">{displayKey(key)}</span>
+            {/each}
+          </span>
+        </div>
+      {/each}
+    </div>
+  </div>
+</section>
 
 <style>
-  .insp-section {
-    border-bottom: 1px solid var(--border-soft);
-    padding: 18px 20px;
+  .inspector-panel {
+    display: grid;
+    grid-template-columns: minmax(280px, 1.45fr) minmax(220px, 0.8fr) minmax(260px, 1fr) minmax(250px, 0.85fr);
+    gap: 14px;
+    min-height: 170px;
+    background: var(--surface);
+    padding: 14px 18px;
+  }
+
+  .photo-strip {
+    display: grid;
+    grid-template-columns: 140px minmax(0, 1fr);
+    gap: 14px;
+    min-width: 0;
+  }
+
+  .photo-heading {
+    min-width: 0;
   }
 
   .insp-eyebrow {
@@ -156,25 +166,30 @@
   }
 
   .insp-title {
+    overflow: hidden;
     margin: 0 0 6px;
     color: var(--fg);
     font-family: var(--font-display);
-    font-size: 16px;
+    font-size: 17px;
     font-weight: 500;
     line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .insp-sub {
+    overflow: hidden;
     margin: 0;
     color: var(--meta);
     font-family: var(--font-mono);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .preview {
     aspect-ratio: 4 / 3;
-    margin-top: 14px;
     overflow: hidden;
     border-radius: 6px;
     background: var(--surface-warm);
@@ -188,10 +203,34 @@
     background: var(--surface-strong);
   }
 
-  .score-row {
+  .exif-chips {
     display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 12px;
+  }
+
+  .exif-chips span {
+    max-width: 170px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    padding: 3px 6px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .score-panel {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
-    gap: 14px;
+    gap: 12px;
+    min-width: 0;
   }
 
   .score-num {
@@ -210,7 +249,7 @@
 
   .score-bars {
     display: flex;
-    flex: 1;
+    min-width: 0;
     flex-direction: column;
     gap: 5px;
   }
@@ -223,9 +262,7 @@
   }
 
   .lbl,
-  .v,
-  .exif-row .k,
-  .exif-row .v {
+  .v {
     font-family: var(--font-mono);
     font-size: 10px;
     font-variant-numeric: tabular-nums;
@@ -255,7 +292,13 @@
     text-align: right;
   }
 
-  .ai-reason {
+  .reason-panel {
+    min-width: 0;
+  }
+
+  .reason-panel p:last-child {
+    display: -webkit-box;
+    overflow: hidden;
     border: 1px solid var(--border);
     border-left: 2px solid var(--accent);
     border-radius: 0 6px 6px 0;
@@ -263,28 +306,18 @@
     color: var(--muted);
     font-size: 13px;
     line-height: 1.6;
+    margin: 0;
     padding: 12px 14px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
   }
 
-  .exif-row {
+  .action-panel {
     display: flex;
-    justify-content: space-between;
-    border-bottom: 1px solid var(--border-soft);
-    padding: 5px 0;
-  }
-
-  .exif-row:last-child {
-    border-bottom: 0;
-  }
-
-  .exif-row .k {
-    color: var(--meta);
-    text-transform: uppercase;
-  }
-
-  .exif-row .v {
-    color: var(--fg-2);
-    font-size: 11px;
+    min-width: 0;
+    flex-direction: column;
+    gap: 10px;
   }
 
   .decisions {
@@ -298,7 +331,7 @@
     color: var(--accent-on);
     font-size: 12px;
     font-weight: 700;
-    padding: 10px 8px;
+    padding: 9px 8px;
   }
 
   .dec-btn span {
@@ -327,12 +360,9 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 6px 14px;
-    margin-top: auto;
-    border-top: 1px solid var(--border);
-    background: var(--bg);
+    min-width: 0;
     color: var(--meta);
     font-size: 11px;
-    padding: 14px 20px;
   }
 
   .kbd-hints > div {
@@ -352,5 +382,21 @@
     color: var(--meta);
     font-family: var(--font-mono);
     font-size: 9px;
+  }
+
+  @media (max-width: 1320px) {
+    .inspector-panel {
+      grid-template-columns: minmax(280px, 1.3fr) minmax(260px, 1fr);
+    }
+  }
+
+  @media (max-width: 900px) {
+    .inspector-panel {
+      grid-template-columns: 1fr;
+    }
+
+    .photo-strip {
+      grid-template-columns: 112px minmax(0, 1fr);
+    }
   }
 </style>
