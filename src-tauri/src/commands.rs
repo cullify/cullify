@@ -8,7 +8,7 @@ use tauri::{Manager, State};
 
 use crate::{
     config::{AppConfig, AppConfigEnvelope},
-    db::{Database, app_data_dir},
+    db::Database,
     error::{AppError, AppResult},
     export::ExportSummary,
     models::{BatchDecisionRequest, CreateProjectRequest, Photo, Project, ScanSummary},
@@ -17,12 +17,15 @@ use crate::{
 
 pub struct AppState {
     pub db: Arc<Database>,
+    pub app_data_dir: PathBuf,
 }
 
 impl AppState {
-    pub fn new() -> AppResult<Self> {
+    pub fn new(app_data_dir: PathBuf) -> AppResult<Self> {
+        fs::create_dir_all(&app_data_dir)?;
         Ok(Self {
-            db: Arc::new(Database::open_default()?),
+            db: Arc::new(Database::open(app_data_dir.join("cullify.db"))?),
+            app_data_dir,
         })
     }
 }
@@ -36,7 +39,7 @@ pub fn list_projects(
     for project in &projects {
         allow_asset_directory(&app, project.folder_path.as_str()).map_err(String::from)?;
     }
-    allow_asset_directory(&app, &thumbnail_root().map_err(String::from)?).map_err(String::from)?;
+    allow_asset_directory(&app, &thumbnail_root(&state.app_data_dir)).map_err(String::from)?;
     Ok(projects)
 }
 
@@ -49,7 +52,7 @@ pub fn list_photos(
     if let Some(project) = state.db.get_project(&project_id).map_err(String::from)? {
         allow_asset_directory(&app, project.folder_path.as_str()).map_err(String::from)?;
     }
-    allow_asset_directory(&app, &thumbnail_root().map_err(String::from)?).map_err(String::from)?;
+    allow_asset_directory(&app, &thumbnail_root(&state.app_data_dir)).map_err(String::from)?;
     state.db.list_photos(&project_id).map_err(Into::into)
 }
 
@@ -59,18 +62,14 @@ pub fn create_project_from_folder(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ScanSummary, String> {
-    let config = crate::config::load_app_config()
+    let config = crate::config::load_app_config(&state.app_data_dir)
         .map_err(String::from)?
         .config;
-    let summary = create_project_from_folder_inner(
-        request,
-        &state.db,
-        &config,
-        &thumbnail_root().map_err(String::from)?,
-    )
-    .map_err(String::from)?;
+    let thumbnail_root = thumbnail_root(&state.app_data_dir);
+    let summary = create_project_from_folder_inner(request, &state.db, &config, &thumbnail_root)
+        .map_err(String::from)?;
     allow_asset_directory(&app, summary.project.folder_path.as_str()).map_err(String::from)?;
-    allow_asset_directory(&app, &thumbnail_root().map_err(String::from)?).map_err(String::from)?;
+    allow_asset_directory(&app, &thumbnail_root).map_err(String::from)?;
     Ok(summary)
 }
 
@@ -91,12 +90,8 @@ pub fn rename_project(
 
 #[tauri::command]
 pub fn delete_project(project_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    delete_project_inner(
-        &project_id,
-        &state.db,
-        &thumbnail_root().map_err(String::from)?,
-    )
-    .map_err(String::from)
+    delete_project_inner(&project_id, &state.db, &thumbnail_root(&state.app_data_dir))
+        .map_err(String::from)
 }
 
 #[tauri::command]
@@ -127,13 +122,16 @@ pub fn set_photo_decisions(
 }
 
 #[tauri::command]
-pub fn load_app_config() -> Result<AppConfigEnvelope, String> {
-    crate::config::load_app_config().map_err(Into::into)
+pub fn load_app_config(state: State<'_, AppState>) -> Result<AppConfigEnvelope, String> {
+    crate::config::load_app_config(&state.app_data_dir).map_err(Into::into)
 }
 
 #[tauri::command]
-pub fn save_app_config(config: AppConfig) -> Result<AppConfigEnvelope, String> {
-    crate::config::save_app_config(&config).map_err(Into::into)
+pub fn save_app_config(
+    config: AppConfig,
+    state: State<'_, AppState>,
+) -> Result<AppConfigEnvelope, String> {
+    crate::config::save_app_config(&state.app_data_dir, &config).map_err(Into::into)
 }
 
 #[tauri::command]
@@ -146,7 +144,8 @@ pub fn export_project(
         crate::export::export_project_with_root(&state.db, &project_id, PathBuf::from(export_root))
             .map_err(Into::into)
     } else {
-        crate::export::export_project(&state.db, &project_id).map_err(Into::into)
+        crate::export::export_project(&state.db, &project_id, &state.app_data_dir)
+            .map_err(Into::into)
     }
 }
 
@@ -212,8 +211,8 @@ fn delete_project_inner(project_id: &str, db: &Database, thumbnail_root: &Path) 
     Ok(())
 }
 
-fn thumbnail_root() -> AppResult<PathBuf> {
-    Ok(app_data_dir()?.join("thumbnails"))
+fn thumbnail_root(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("thumbnails")
 }
 
 fn allow_asset_directory(app: &tauri::AppHandle, folder_path: impl AsRef<Path>) -> AppResult<()> {

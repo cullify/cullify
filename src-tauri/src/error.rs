@@ -24,8 +24,6 @@ pub enum AppError {
     Zip(#[from] zip::result::ZipError),
     #[error("tauri runtime error: {0}")]
     Tauri(#[from] tauri::Error),
-    #[error("app data directory is not available")]
-    MissingDataDir,
     #[error("project not found: {0}")]
     ProjectNotFound(String),
     #[error("folder does not exist or is not a directory: {0}")]

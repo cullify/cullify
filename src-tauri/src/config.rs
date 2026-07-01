@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{db::app_data_dir, error::AppResult};
+use crate::error::AppResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -51,14 +51,14 @@ impl Default for AppConfig {
     }
 }
 
-pub fn load_app_config() -> AppResult<AppConfigEnvelope> {
-    let path = config_path()?;
+pub fn load_app_config(app_data_dir: &Path) -> AppResult<AppConfigEnvelope> {
+    let path = config_path(app_data_dir);
     let config = load_config_from_path(&path)?;
     Ok(envelope(config, path))
 }
 
-pub fn save_app_config(config: &AppConfig) -> AppResult<AppConfigEnvelope> {
-    let path = config_path()?;
+pub fn save_app_config(app_data_dir: &Path, config: &AppConfig) -> AppResult<AppConfigEnvelope> {
+    let path = config_path(app_data_dir);
     save_config_to_path(&path, config)?;
     Ok(envelope(config.clone(), path))
 }
@@ -81,8 +81,8 @@ fn save_config_to_path(path: &Path, config: &AppConfig) -> AppResult<()> {
     Ok(())
 }
 
-fn config_path() -> AppResult<PathBuf> {
-    Ok(app_data_dir()?.join("config.toml"))
+fn config_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("config.toml")
 }
 
 fn envelope(config: AppConfig, path: PathBuf) -> AppConfigEnvelope {

@@ -13,13 +13,17 @@ use commands::{
     list_projects, load_app_config, rename_project, save_app_config, set_photo_decision,
     set_photo_decisions,
 };
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let state = AppState::new().expect("failed to initialize Cullify application state");
-
     tauri::Builder::default()
-        .manage(state)
+        .setup(|app| {
+            let app_data_dir = app.path().app_data_dir()?;
+            let state = AppState::new(app_data_dir)?;
+            app.manage(state);
+            Ok(())
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
