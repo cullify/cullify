@@ -96,6 +96,7 @@ export interface AppConfig {
 export interface AppConfigEnvelope {
   config: AppConfig;
   configPath: string;
+  appDataDir: string;
 }
 
 export interface ExportSummary {

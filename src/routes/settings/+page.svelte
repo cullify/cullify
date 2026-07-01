@@ -22,7 +22,8 @@
   let shortcuts = $state<Shortcut[]>(seedShortcuts.map((shortcut) => ({ ...shortcut, keys: [...shortcut.keys] })));
   let editingShortcut = $state<string | null>(null);
   let dirtyFields = $state<string[]>([]);
-  let configPath = $state('~/.cullify/config.toml');
+  let configPath = $state('桌面环境可用');
+  let appDataDir = $state('桌面环境可用');
   let isLoadingConfig = $state(true);
   let isSavingConfig = $state(false);
   let configError = $state('');
@@ -41,8 +42,11 @@
     const envelope = await tryLoadAppConfig();
     if (envelope) {
       configPath = envelope.configPath;
+      appDataDir = envelope.appDataDir;
       applyConfig(envelope.config);
     } else {
+      configPath = '桌面环境可用';
+      appDataDir = '桌面环境可用';
       applyConfig(defaultAppConfig);
     }
     isLoadingConfig = false;
@@ -160,6 +164,7 @@
     const envelope = await trySaveAppConfig(buildConfig());
     if (envelope) {
       configPath = envelope.configPath;
+      appDataDir = envelope.appDataDir;
       applyConfig(envelope.config);
     } else {
       configError = '保存失败，请确认当前运行在 Tauri 桌面环境。';
@@ -375,7 +380,7 @@
             <span><b>桌面框架</b><em>Tauri 2</em></span>
             <span><b>前端</b><em>Svelte 5</em></span>
             <span><b>后端语言</b><em>Rust · Edition 2024</em></span>
-            <span><b>数据目录</b><em>~/.cullify</em></span>
+            <span><b>数据目录</b><em>{appDataDir}</em></span>
           </div>
         </div>
       </section>

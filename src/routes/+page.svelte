@@ -70,11 +70,13 @@
   let isCreating = $state(false);
   let createMessage = $state('');
   let createMessageTone = $state<'info' | 'success' | 'error'>('info');
+  let appDataDir = $state('桌面环境可用');
 
   const totalProcessed = $derived(projects.reduce((total, project) => total + project.total, 0));
   const totalCulled = $derived(projects.reduce((total, project) => total + project.culled, 0));
   const cullRatio = $derived(totalProcessed ? Math.round((totalCulled / totalProcessed) * 100) : 0);
   const statusSummary = $derived(isDemoData ? '浏览器演示数据' : `${projects.length} 个本地项目`);
+  const databasePath = $derived(appDataDir === '桌面环境可用' ? '桌面数据目录' : `${appDataDir}/cullify.db`);
 
   onMount(() => {
     void loadShortcuts();
@@ -92,6 +94,7 @@
   async function loadShortcuts() {
     const envelope = await tryLoadAppConfig();
     const configuredShortcuts = envelope?.config.shortcuts ?? defaultAppConfig.shortcuts;
+    appDataDir = envelope?.appDataDir ?? '桌面环境可用';
     shortcutRows = shortcuts.map((shortcut) => ({
       ...shortcut,
       keys: configuredShortcuts.find((item) => item.id === shortcut.id)?.keys ?? [...shortcut.keys]
@@ -228,7 +231,13 @@
   }
 </script>
 
-<AppShell active="dashboard" recentProjects={projects} cullCount={String(totalProcessed)} statusLeft={['引擎就绪 · 快速模式可用', statusSummary, '数据 · 本机']}>
+<AppShell
+  active="dashboard"
+  recentProjects={projects}
+  cullCount={String(totalProcessed)}
+  statusLeft={['引擎就绪 · 快速模式可用', statusSummary, '数据 · 本机']}
+  statusRight={[databasePath, '本地版']}
+>
   <main class="app-main scroll">
     <div class="page-pad">
       <header class="topbar">

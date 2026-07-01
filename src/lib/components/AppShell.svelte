@@ -24,7 +24,7 @@
     recentProjects = [],
     cullCount = '0',
     statusLeft = ['引擎就绪 · 快速模式可用', '模型 · 未强制要求', '数据 · 本机'],
-    statusRight = ['~/.cullify/cullify.db', '本地版']
+    statusRight = ['桌面数据目录', '本地版']
   }: Props = $props();
 
   type RoutePath = '/' | '/cull' | '/settings';

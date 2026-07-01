@@ -32,6 +32,7 @@ pub struct ShortcutConfig {
 pub struct AppConfigEnvelope {
     pub config: AppConfig,
     pub config_path: String,
+    pub app_data_dir: String,
 }
 
 impl Default for AppConfig {
@@ -54,13 +55,13 @@ impl Default for AppConfig {
 pub fn load_app_config(app_data_dir: &Path) -> AppResult<AppConfigEnvelope> {
     let path = config_path(app_data_dir);
     let config = load_config_from_path(&path)?;
-    Ok(envelope(config, path))
+    Ok(envelope(config, app_data_dir, path))
 }
 
 pub fn save_app_config(app_data_dir: &Path, config: &AppConfig) -> AppResult<AppConfigEnvelope> {
     let path = config_path(app_data_dir);
     save_config_to_path(&path, config)?;
-    Ok(envelope(config.clone(), path))
+    Ok(envelope(config.clone(), app_data_dir, path))
 }
 
 fn load_config_from_path(path: &Path) -> AppResult<AppConfig> {
@@ -85,10 +86,11 @@ fn config_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("config.toml")
 }
 
-fn envelope(config: AppConfig, path: PathBuf) -> AppConfigEnvelope {
+fn envelope(config: AppConfig, app_data_dir: &Path, path: PathBuf) -> AppConfigEnvelope {
     AppConfigEnvelope {
         config,
         config_path: path.to_string_lossy().to_string(),
+        app_data_dir: app_data_dir.to_string_lossy().to_string(),
     }
 }
 
