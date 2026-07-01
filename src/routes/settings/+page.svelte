@@ -1,17 +1,24 @@
 <script lang="ts">
-  import { resolve } from '$app/paths';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     defaultAppConfig,
+    tryDownloadModel,
+    tryListHuggingFaceVisionModels,
     tryLoadAppConfig,
     trySaveAppConfig,
-    type AppConfig
+    type AppConfig,
+    type HuggingFaceVisionModel,
+    type LocalModelConfig,
+    type ThirdPartyProviderConfig
   } from '$lib/backend';
-  import { models as seedModels, providers, shortcuts as seedShortcuts } from '$lib/mockData';
-  import type { ProviderId, Shortcut, VlmModel } from '$lib/types';
+  import { shortcuts as seedShortcuts } from '$lib/mockData';
+  import { getShellContext } from '$lib/shell.svelte';
+  import type { Shortcut } from '$lib/types';
 
-  let activeProvider = $state<ProviderId>(defaultAppConfig.providerId);
-  let models = $state<VlmModel[]>(seedModels.map((model) => ({ ...model })));
+  let activeProvider = $state(defaultAppConfig.activeModelProviderId);
+  let activeLocalModelId = $state(defaultAppConfig.activeLocalModelId);
+  let localModels = $state<LocalModelConfig[]>(cloneLocalModels(defaultAppConfig.localModels));
+  let thirdPartyProviders = $state<ThirdPartyProviderConfig[]>(cloneProviders(defaultAppConfig.thirdPartyProviders));
   let blurThreshold = $state(defaultAppConfig.blurThreshold);
   let exposureTolerance = $state(defaultAppConfig.exposureTolerance);
   let cullLine = $state(defaultAppConfig.cullLine);
@@ -27,13 +34,79 @@
   let isLoadingConfig = $state(true);
   let isSavingConfig = $state(false);
   let configError = $state('');
+  let downloadingModelId = $state('');
+  let downloadMessage = $state('');
+  let modelCatalog = $state<HuggingFaceVisionModel[]>([]);
+  let modelCatalogStatus = $state<'ready' | 'fallback'>('fallback');
+  let modelCatalogTotal = $state(0);
+  let modelCatalogHasMore = $state(false);
+  let modelCatalogCacheDate = $state('');
+  let isCatalogRefreshing = $state(false);
+  let isLoadingMoreModels = $state(false);
+  let modelCatalogSearch = $state('');
+  let providerSearch = $state('');
+  let showProviderDraft = $state(false);
+  let newProviderName = $state('');
+  let newProviderBaseUrl = $state('http://localhost:11434/v1');
+  let newProviderModel = $state('');
+  let newProviderApiKey = $state('');
 
-  const activeProviderName = $derived(providers.find((provider) => provider.id === activeProvider)?.name ?? '未配置');
-  const activeModelId = $derived(models.find((model) => model.active)?.id ?? defaultAppConfig.activeModelId);
+  const activeProviderConfig = $derived(thirdPartyProviders.find((provider) => provider.id === activeProvider) ?? null);
+  const activeProviderName = $derived(providerName(activeProvider));
+  const activeModelId = $derived(activeProvider === 'llama.cpp' ? activeLocalModelId : (activeProviderConfig?.model || '未指定'));
+  const activeLocalModel = $derived(localModels.find((model) => model.id === activeLocalModelId) ?? null);
   const dirtyCount = $derived(dirtyFields.length);
+  const shell = getShellContext();
+  const filteredThirdPartyProviders = $derived.by(() => {
+    const keyword = providerSearch.trim().toLowerCase();
+    if (!keyword) return thirdPartyProviders;
+    return thirdPartyProviders.filter((provider) =>
+      [provider.name, provider.id, provider.baseUrl, provider.model].some((value) => value.toLowerCase().includes(keyword))
+    );
+  });
+  const visibleCatalogModels = $derived.by(() => {
+    const rows = modelCatalog.length ? modelCatalog : localModels.map(catalogModelFromLocalModel);
+    const keyword = modelCatalogSearch.trim().toLowerCase();
+    if (!keyword) return rows;
+    return rows.filter((model) =>
+      [model.name, model.repoId, model.fileName, model.task, model.author].some((value) =>
+        value.toLowerCase().includes(keyword)
+      )
+    );
+  });
 
   onMount(() => {
     void loadSavedConfig();
+    void loadHuggingFaceCatalog();
+  });
+
+  onDestroy(() => {
+    shell.resetPage();
+  });
+
+  $effect(() => {
+    shell.configure({
+      active: 'settings',
+      title: '设置',
+      subtitle: `${activeProviderName} · ${activeModelId}`,
+      cullCount: '·',
+      sidebarExtra: settingsSidebar,
+      showDefaultSidebarDetails: false,
+      footer: {
+        photo: '照片分析待机',
+        analysis: dirtyCount ? `${dirtyCount} 项配置未保存` : '配置已保存',
+        model: downloadingModelId
+          ? `模型下载 · ${downloadingModelId}`
+          : isCatalogRefreshing
+            ? '模型目录刷新中'
+            : `当前模型 · ${activeModelId}`,
+        resources: {
+          cpu: isCatalogRefreshing || downloadingModelId ? 'CPU 网络任务' : 'CPU 待机',
+          memory: modelCatalog.length ? `内存 模型缓存 ${modelCatalog.length}/${modelCatalogTotal}` : '内存 本地列表',
+          gpu: gpuMetal ? '显存 Metal 已启用' : '显存 Metal 关闭'
+        }
+      }
+    });
   });
 
   async function loadSavedConfig() {
@@ -53,7 +126,15 @@
   }
 
   function applyConfig(config: AppConfig) {
-    activeProvider = normalizeProvider(config.providerId);
+    localModels = cloneLocalModels(config.localModels?.length ? config.localModels : defaultAppConfig.localModels);
+    thirdPartyProviders = cloneProviders(
+      config.thirdPartyProviders?.length ? config.thirdPartyProviders : defaultAppConfig.thirdPartyProviders
+    );
+    activeProvider = normalizeProvider(config.activeModelProviderId || config.providerId, thirdPartyProviders);
+    activeLocalModelId = config.activeLocalModelId || config.activeModelId || localModels[0]?.id || defaultAppConfig.activeLocalModelId;
+    if (!localModels.some((model) => model.id === activeLocalModelId)) {
+      activeLocalModelId = localModels[0]?.id ?? defaultAppConfig.activeLocalModelId;
+    }
     blurThreshold = config.blurThreshold;
     exposureTolerance = config.exposureTolerance;
     cullLine = config.cullLine;
@@ -62,28 +143,217 @@
     autoGroup = config.autoGroup;
     gpuMetal = config.gpuMetal;
 
-    models = seedModels.map((model) => ({
-      ...model,
-      active: model.id === config.activeModelId,
-      action: model.id === config.activeModelId ? '已激活' : model.action === '已激活' ? '切换' : model.action
-    }));
-
     shortcuts = seedShortcuts.map((shortcut) => ({
       ...shortcut,
       keys: config.shortcuts.find((item) => item.id === shortcut.id)?.keys ?? [...shortcut.keys]
     }));
+    downloadMessage = '';
     dirtyFields = [];
   }
 
-  function normalizeProvider(providerId: string): ProviderId {
-    if (providerId === 'ollama' || providerId === 'openai') return providerId;
-    return 'builtin';
+  function normalizeProvider(providerId: string, currentProviders = thirdPartyProviders) {
+    if (providerId === 'llama.cpp' || providerId === 'builtin') return 'llama.cpp';
+    if (providerId === 'ollama') return 'ollama-local';
+    if (providerId === 'openai') return 'openai-compatible';
+    if (currentProviders.some((provider) => provider.id === providerId)) return providerId;
+    return 'llama.cpp';
+  }
+
+  function providerName(providerId: string) {
+    if (providerId === 'llama.cpp') return '本地模型';
+    return thirdPartyProviders.find((provider) => provider.id === providerId)?.name ?? '未配置';
+  }
+
+  function cloneLocalModels(models: LocalModelConfig[]) {
+    return models.map((model) => ({ ...model, localPath: model.localPath ?? null }));
+  }
+
+  function cloneProviders(nextProviders: ThirdPartyProviderConfig[]) {
+    return nextProviders.map((provider) => ({ ...provider }));
+  }
+
+  function uniqueId(seed: string, existing: string[], fallback: string) {
+    const base =
+      seed
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || fallback;
+    let candidate = base;
+    let index = 2;
+    while (existing.includes(candidate)) {
+      candidate = `${base}-${index}`;
+      index += 1;
+    }
+    return candidate;
+  }
+
+  function legacyProviderId(providerId: string) {
+    return providerId === 'llama.cpp' ? 'builtin' : providerId;
+  }
+
+  function resolvedActiveModelId() {
+    if (activeProvider === 'llama.cpp') return activeLocalModelId;
+    return thirdPartyProviders.find((provider) => provider.id === activeProvider)?.model || '';
+  }
+
+  function selectedLocalModelPath(model: LocalModelConfig) {
+    return model.localPath || `${appDataDir}/models/${model.fileName}`;
+  }
+
+  function formatBytes(value: number) {
+    if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  }
+
+  function selectedProviderSummary(provider: ThirdPartyProviderConfig) {
+    if (!provider.enabled) return '已停用';
+    if (!provider.model) return '未填写模型名';
+    return provider.model;
+  }
+
+  function providerInitials(provider: ThirdPartyProviderConfig) {
+    return (provider.name || provider.id).slice(0, 2).toUpperCase();
+  }
+
+  function providerStatusLabel(provider: ThirdPartyProviderConfig) {
+    if (!provider.enabled) return 'OFF';
+    if (!provider.model) return 'SETUP';
+    return 'ON';
+  }
+
+  function providerStatusText(provider: ThirdPartyProviderConfig) {
+    if (!provider.enabled) return '当前停用';
+    if (!provider.baseUrl) return '需要填写 API Host';
+    if (!provider.model) return '需要选择模型';
+    return '可用于专家模式';
+  }
+
+  function providerModelSummary(providerId: string) {
+    if (providerId === 'llama.cpp') return `llama.cpp 驱动 · ${activeLocalModel?.name ?? activeLocalModelId}`;
+    return thirdPartyProviders.find((provider) => provider.id === providerId)?.model || '未指定模型';
+  }
+
+  function catalogModelFromLocalModel(model: LocalModelConfig): HuggingFaceVisionModel {
+    const repoId = model.downloadUrl.match(/huggingface\.co\/([^/]+\/[^/]+)/)?.[1] ?? 'local/models';
+    return {
+      id: model.id,
+      repoId,
+      name: model.name,
+      author: repoId.split('/')[0] ?? 'local',
+      task: model.downloadUrl.includes('huggingface.co') ? 'image-text-to-text' : 'local',
+      license: '未标注',
+      fileName: model.fileName,
+      downloadUrl: model.downloadUrl,
+      downloads: 0,
+      likes: 0,
+      lastModified: 'unknown',
+      downloaded: model.downloaded,
+      updateAvailable: false,
+      localPath: model.localPath
+    };
+  }
+
+  function modelActionLabel(model: HuggingFaceVisionModel) {
+    if (downloadingModelId === model.id) return '下载中';
+    if (model.downloaded && model.updateAvailable) return '更新';
+    if (model.downloaded) return '已下载';
+    return '下载';
+  }
+
+  function modelActionDisabled(model: HuggingFaceVisionModel) {
+    return downloadingModelId === model.id || (model.downloaded && !model.updateAvailable) || !validDownloadUrl(model.downloadUrl);
+  }
+
+  function formatCompactNumber(value: number) {
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+    return `${value}`;
+  }
+
+  function formatModelDate(value: string) {
+    if (!value || value === 'unknown') return '未知';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '未知';
+    return date.toISOString().slice(0, 10);
+  }
+
+  async function loadHuggingFaceCatalog(refresh = false) {
+    const offset = refresh ? 0 : modelCatalog.length;
+    const taskId = refresh ? 'hf-catalog-refresh' : 'hf-catalog-load';
+    if (offset === 0) {
+      isCatalogRefreshing = true;
+      shell.startTask({
+        id: taskId,
+        label: refresh ? '刷新模型目录' : '加载模型目录',
+        detail: '读取 Hugging Face 缓存',
+        progress: null
+      });
+    } else {
+      isLoadingMoreModels = true;
+    }
+
+    try {
+      const page = await catalogRequestWithTimeout({ offset, limit: 20, refresh });
+      if (page?.models.length) {
+        modelCatalog = offset === 0 ? page.models : [...modelCatalog, ...page.models];
+        modelCatalogTotal = page.total;
+        modelCatalogHasMore = page.hasMore;
+        modelCatalogCacheDate = page.cacheDate;
+        modelCatalogStatus = 'ready';
+        if (offset === 0) shell.finishTask(taskId, refresh ? '缓存已刷新' : '缓存已读取');
+      } else if (offset === 0) {
+        modelCatalog = [];
+        modelCatalogTotal = 0;
+        modelCatalogHasMore = false;
+        modelCatalogCacheDate = '';
+        modelCatalogStatus = 'fallback';
+        shell.finishTask(taskId, '使用本地模型列表');
+      }
+    } finally {
+      isCatalogRefreshing = false;
+      isLoadingMoreModels = false;
+    }
+  }
+
+  function catalogRequestWithTimeout(request: { offset: number; limit: number; refresh: boolean }) {
+    return Promise.race([
+      tryListHuggingFaceVisionModels(request),
+      new Promise<null>((resolve) => {
+        window.setTimeout(() => resolve(null), request.refresh ? 30000 : 3000);
+      })
+    ]);
+  }
+
+  async function loadMoreHuggingFaceModels() {
+    if (!modelCatalogHasMore || isLoadingMoreModels || isCatalogRefreshing) return;
+    await loadHuggingFaceCatalog(false);
+  }
+
+  function resetProviderDraft() {
+    newProviderName = '';
+    newProviderBaseUrl = 'http://localhost:11434/v1';
+    newProviderModel = '';
+    newProviderApiKey = '';
+  }
+
+  function validDownloadUrl(value: string) {
+    return value.trim().startsWith('https://') || value.trim().startsWith('http://');
+  }
+
+  function canDownload(model: LocalModelConfig) {
+    return validDownloadUrl(model.downloadUrl) && Boolean(model.fileName.trim()) && downloadingModelId !== model.id;
   }
 
   function buildConfig(): AppConfig {
     return {
-      providerId: activeProvider,
-      activeModelId,
+      providerId: legacyProviderId(activeProvider),
+      activeModelId: resolvedActiveModelId(),
+      activeModelProviderId: activeProvider,
+      activeLocalModelId,
+      localModels: cloneLocalModels(localModels),
+      thirdPartyProviders: cloneProviders(thirdPartyProviders),
       blurThreshold,
       exposureTolerance,
       cullLine,
@@ -99,18 +369,153 @@
     if (!dirtyFields.includes(label)) dirtyFields.push(label);
   }
 
-  function selectProvider(provider: ProviderId) {
+  function selectProvider(provider: string) {
     activeProvider = provider;
-    markDirty(`Provider → ${providers.find((item) => item.id === provider)?.name ?? provider}`);
+    markDirty(`供应商 → ${providerName(provider)}`);
   }
 
-  function activateModel(modelId: string) {
-    models = models.map((model) => ({
-      ...model,
-      active: model.id === modelId,
-      action: model.id === modelId ? '已激活' : model.action === '已激活' ? '切换' : model.action
-    }));
-    markDirty(`模型 → ${models.find((model) => model.id === modelId)?.name ?? modelId}`);
+  function activateLocalModel(modelId: string) {
+    activeProvider = 'llama.cpp';
+    activeLocalModelId = modelId;
+    markDirty(`本地模型 → ${localModels.find((model) => model.id === modelId)?.name ?? modelId}`);
+  }
+
+  async function downloadLocalModel(model: LocalModelConfig) {
+    if (!canDownload(model)) {
+      downloadMessage = '当前模型没有可用下载源，或文件名无效。';
+      return;
+    }
+    const taskId = `model-download-${model.id}`;
+    downloadingModelId = model.id;
+    downloadMessage = `正在下载 ${model.name}...`;
+    shell.startTask({
+      id: taskId,
+      label: '模型下载',
+      detail: model.name,
+      progress: null
+    });
+    const summary = await tryDownloadModel({
+      modelId: model.id,
+      fileName: model.fileName,
+      downloadUrl: model.downloadUrl
+    });
+    if (summary) {
+      localModels = localModels.map((item) =>
+        item.id === model.id ? { ...item, downloaded: true, localPath: summary.path } : item
+      );
+      activeProvider = 'llama.cpp';
+      activeLocalModelId = model.id;
+      downloadMessage = `已下载 ${formatBytes(summary.bytes)} 到 ${summary.path}`;
+      markDirty(`下载模型 → ${model.name}`);
+      shell.finishTask(taskId, '下载完成');
+    } else {
+      downloadMessage = '下载失败，请确认地址可访问、磁盘空间充足，并查看终端日志。';
+      shell.failTask(taskId, '下载失败');
+    }
+    downloadingModelId = '';
+  }
+
+  async function downloadCatalogModel(model: HuggingFaceVisionModel) {
+    if (modelActionDisabled(model) && !(model.downloaded && model.updateAvailable)) return;
+    const taskId = `model-download-${model.id}`;
+    downloadingModelId = model.id;
+    downloadMessage = `${model.updateAvailable ? '正在更新' : '正在下载'} ${model.name}...`;
+    shell.startTask({
+      id: taskId,
+      label: model.updateAvailable ? '模型更新' : '模型下载',
+      detail: model.name,
+      progress: null
+    });
+    const summary = await tryDownloadModel({
+      modelId: model.id,
+      fileName: model.fileName,
+      downloadUrl: model.downloadUrl
+    });
+    if (summary) {
+      const downloadedModel = {
+        ...model,
+        downloaded: true,
+        updateAvailable: false,
+        localPath: summary.path
+      };
+      modelCatalog = modelCatalog.map((item) => (item.id === model.id ? downloadedModel : item));
+      localModels = upsertLocalModelFromCatalog(downloadedModel, summary.path);
+      activeProvider = 'llama.cpp';
+      activeLocalModelId = model.id;
+      downloadMessage = `已${model.updateAvailable ? '更新' : '下载'} ${formatBytes(summary.bytes)} 到 ${summary.path}`;
+      markDirty(`${model.updateAvailable ? '更新' : '下载'}模型 → ${model.name}`);
+      shell.finishTask(taskId, model.updateAvailable ? '更新完成' : '下载完成');
+    } else {
+      downloadMessage = '下载失败，请确认 Hugging Face 可访问、磁盘空间充足，并查看终端日志。';
+      shell.failTask(taskId, '下载失败');
+    }
+    downloadingModelId = '';
+  }
+
+  function upsertLocalModelFromCatalog(model: HuggingFaceVisionModel, localPath: string) {
+    const nextModel: LocalModelConfig = {
+      id: model.id,
+      name: model.name,
+      fileName: model.fileName,
+      size: 'GGUF',
+      speed: 'llama.cpp',
+      downloadUrl: model.downloadUrl,
+      localPath,
+      downloaded: true
+    };
+    if (localModels.some((item) => item.id === model.id || item.fileName === model.fileName)) {
+      return localModels.map((item) => (item.id === model.id || item.fileName === model.fileName ? nextModel : item));
+    }
+    return [...localModels, nextModel];
+  }
+
+  function addProvider() {
+    if (!newProviderName.trim() || !newProviderBaseUrl.trim()) {
+      configError = '添加供应商需要填写名称和 Base URL。';
+      return;
+    }
+    const id = uniqueId(newProviderName, thirdPartyProviders.map((provider) => provider.id), 'provider');
+    thirdPartyProviders = [
+      ...thirdPartyProviders,
+      {
+        id,
+        name: newProviderName.trim(),
+        baseUrl: newProviderBaseUrl.trim(),
+        apiKey: newProviderApiKey,
+        model: newProviderModel.trim(),
+        kind: 'openai-compatible',
+        enabled: true
+      }
+    ];
+    activeProvider = id;
+    configError = '';
+    showProviderDraft = false;
+    resetProviderDraft();
+    markDirty('添加第三方供应商');
+  }
+
+  function removeProvider(providerId: string) {
+    thirdPartyProviders = thirdPartyProviders.filter((provider) => provider.id !== providerId);
+    if (activeProvider === providerId) activeProvider = 'llama.cpp';
+    markDirty('删除第三方供应商');
+  }
+
+  function updateProvider(
+    providerId: string,
+    field: 'name' | 'baseUrl' | 'apiKey' | 'model' | 'kind',
+    value: string
+  ) {
+    thirdPartyProviders = thirdPartyProviders.map((provider) =>
+      provider.id === providerId ? { ...provider, [field]: value } : provider
+    );
+    markDirty(`供应商 ${field}`);
+  }
+
+  function toggleProvider(providerId: string) {
+    thirdPartyProviders = thirdPartyProviders.map((provider) =>
+      provider.id === providerId ? { ...provider, enabled: !provider.enabled } : provider
+    );
+    markDirty('供应商启用状态');
   }
 
   function updateNumber(field: 'blur' | 'exposure' | 'cull' | 'threads', value: number) {
@@ -173,31 +578,18 @@
   }
 </script>
 
-<div class="app-shell">
-  <aside class="sidebar">
-    <a class="brand" href={resolve('/')}>
-      <span class="brand-mark">Cullify</span>
-      <span class="brand-ver">v0.1.0</span>
-    </a>
+{#snippet settingsSidebar()}
+  <p class="nav-eyebrow">设置分组</p>
+  <div class="nav-section">
+    <a class="nav-item active" href="#provider">推理引擎 · Provider</a>
+    <a class="nav-item" href="#models">VLM 模型管理</a>
+    <a class="nav-item" href="#modes">模式参数</a>
+    <a class="nav-item" href="#shortcuts">键盘快捷键</a>
+    <a class="nav-item" href="#about">数据与关于</a>
+  </div>
+{/snippet}
 
-    <div class="nav-section">
-      <p class="nav-eyebrow">导航</p>
-      <a class="nav-item" href={resolve('/')}>主控台</a>
-      <a class="nav-item" href={resolve('/cull')}>照片挑选</a>
-      <a class="nav-item active" href={resolve('/settings')}>设置</a>
-    </div>
-
-    <p class="nav-eyebrow">设置分组</p>
-    <div class="nav-section">
-      <a class="nav-item active" href="#provider">推理引擎 · Provider</a>
-      <a class="nav-item" href="#models">VLM 模型管理</a>
-      <a class="nav-item" href="#modes">模式参数</a>
-      <a class="nav-item" href="#shortcuts">键盘快捷键</a>
-      <a class="nav-item" href="#about">数据与关于</a>
-    </div>
-  </aside>
-
-  <main class="app-main scroll">
+<main class="app-main scroll">
     <div class="settings-wrap">
       <header class="page-head">
         <p class="page-num">设置</p>
@@ -209,50 +601,237 @@
 
       <section id="provider" class="section">
         <div class="settings-head">
-          <h2>推理引擎 · Provider 切换</h2>
-          <span>三选一 · 当前为 {activeProviderName}</span>
+          <h2>模型供应商</h2>
+          <span>{activeProvider} / {activeModelId}</span>
         </div>
-        <p class="section-copy">当前真实分析链路使用快速模式的 Rust 原生质量评分；Provider 配置会被保存，但专家模式要等模型任务队列接入后才参与项目创建。</p>
-        <div class="providers">
-          {#each providers as provider (provider.id)}
+        <p class="section-copy">统一管理本地模型和第三方 OpenAI-compatible provider。左侧选择供应商，右侧只展示当前供应商需要维护的凭据与模型。</p>
+
+        <div class="provider-workspace">
+          <aside class="provider-directory" aria-label="模型供应商列表">
+            <div class="directory-search">
+              <input bind:value={providerSearch} placeholder="搜索供应商、模型或地址" aria-label="搜索模型供应商" />
+            </div>
+
             <button
               type="button"
-              class={['provider', activeProvider === provider.id && 'active'].filter(Boolean).join(' ')}
-              aria-pressed={activeProvider === provider.id}
-              onclick={() => selectProvider(provider.id)}
+              class={['provider-list-item', activeProvider === 'llama.cpp' && 'active'].filter(Boolean).join(' ')}
+              aria-pressed={activeProvider === 'llama.cpp'}
+              onclick={() => selectProvider('llama.cpp')}
             >
-              <span class="provider-row">
-                <strong>{provider.name}</strong>
-                <span class={['provider-status', activeProvider === provider.id && 'on'].filter(Boolean).join(' ')}>
-                  {activeProvider === provider.id ? '已选择' : provider.status}
-                </span>
+              <span class="provider-avatar local">ll</span>
+              <span class="provider-list-copy">
+                <strong>本地模型</strong>
+                <small>{providerModelSummary('llama.cpp')}</small>
               </span>
-              <span class="provider-desc">{provider.description}</span>
-              <span class="provider-meta"><span>{provider.metaLeft}</span><span>{provider.metaRight}</span></span>
+              <span class="provider-pill local">LOCAL</span>
             </button>
-          {/each}
-        </div>
-      </section>
 
-      <section id="models" class="section">
-        <div class="settings-head">
-          <h2>VLM 模型管理</h2>
-          <span>当前模型 · {activeModelId}</span>
-        </div>
-        <p class="section-copy">模型清单为后续专家模式预留。商业版接入 VLM 前，需要把“可下载、可校验、可回滚”作为模型管理的核心能力。</p>
-        <div class="model-list">
-          {#each models as model (model.id)}
-            <div class={['model-row-item', model.active && 'active'].filter(Boolean).join(' ')}>
-              <span class="model-state"></span>
-              <span>
-                <strong>{model.name}</strong>
-                <small>{model.file}</small>
-              </span>
-              <span class="model-size">{model.size}</span>
-              <span class="model-speed">{model.speed}</span>
-              <button type="button" class="model-action" onclick={() => activateModel(model.id)}>{model.action}</button>
+            <div class="directory-divider">
+              <span>第三方供应商</span>
+              <span>{filteredThirdPartyProviders.length}</span>
             </div>
-          {/each}
+
+            {#each filteredThirdPartyProviders as provider (provider.id)}
+              <button
+                type="button"
+                class={['provider-list-item', activeProvider === provider.id && 'active'].filter(Boolean).join(' ')}
+                aria-pressed={activeProvider === provider.id}
+                onclick={() => selectProvider(provider.id)}
+              >
+                <span class="provider-avatar">{providerInitials(provider)}</span>
+                <span class="provider-list-copy">
+                  <strong>{provider.name || provider.id}</strong>
+                  <small>{selectedProviderSummary(provider)}</small>
+                </span>
+                <span class={['provider-pill', provider.enabled && provider.model && 'on'].filter(Boolean).join(' ')}>
+                  {providerStatusLabel(provider)}
+                </span>
+              </button>
+            {/each}
+
+            {#if showProviderDraft}
+              <div class="provider-draft">
+                <label>
+                  <span>名称</span>
+                  <input bind:value={newProviderName} placeholder="例如 SiliconFlow" />
+                </label>
+                <label>
+                  <span>API Host</span>
+                  <input bind:value={newProviderBaseUrl} placeholder="https://api.example.com/v1" />
+                </label>
+                <label>
+                  <span>默认模型</span>
+                  <input bind:value={newProviderModel} placeholder="provider/model-name" />
+                </label>
+                <label>
+                  <span>API Key</span>
+                  <input type="password" bind:value={newProviderApiKey} placeholder="可选" />
+                </label>
+                <div class="draft-actions">
+                  <button type="button" class="btn btn-secondary" onclick={() => { showProviderDraft = false; resetProviderDraft(); }}>取消</button>
+                  <button type="button" class="btn btn-primary" onclick={addProvider}>添加</button>
+                </div>
+              </div>
+            {:else}
+              <button type="button" class="provider-add-button" onclick={() => (showProviderDraft = true)}>
+                <span>+</span>
+                添加供应商
+              </button>
+            {/if}
+          </aside>
+
+          <div class="provider-panel">
+            <div class="provider-panel-head">
+              <div>
+                <h3>{activeProviderName}</h3>
+                <p>{activeProvider === 'llama.cpp' ? '由 llama.cpp 驱动 · 从 Hugging Face 下载 GGUF 视觉模型' : activeProviderConfig ? providerStatusText(activeProviderConfig) : '未选择供应商'}</p>
+              </div>
+              {#if activeProviderConfig}
+                <div class="provider-head-actions">
+                  <button
+                    type="button"
+                    class={['toggle', activeProviderConfig.enabled && 'on'].filter(Boolean).join(' ')}
+                    aria-label="切换供应商启用状态"
+                    aria-pressed={activeProviderConfig.enabled}
+                    onclick={() => toggleProvider(activeProviderConfig.id)}
+                  ></button>
+                  <button type="button" class="text-action danger" onclick={() => removeProvider(activeProviderConfig.id)}>删除</button>
+                </div>
+              {/if}
+            </div>
+
+            {#if activeProvider === 'llama.cpp'}
+              <div class="provider-fields single">
+                <label>
+                  <span>模型目录</span>
+                  <input value={`${appDataDir}/models`} readonly />
+                </label>
+                <p>本地模型由 llama.cpp 驱动；目录中的 .gguf 文件会自动识别。下方模型列表由 Hugging Face 提供下载来源。</p>
+              </div>
+
+              <div id="models" class="model-library">
+                <div class="model-library-title">
+                  <h4>Models</h4>
+                  <span>
+                    {#if isCatalogRefreshing && !modelCatalog.length}
+                      正在读取 Hugging Face
+                    {:else if modelCatalogStatus === 'fallback'}
+                      本地列表
+                    {:else}
+                      Hugging Face · {visibleCatalogModels.length} / {modelCatalogTotal} · 缓存 {modelCatalogCacheDate}
+                    {/if}
+                  </span>
+                </div>
+
+                <div class="model-catalog-toolbar">
+                  <input bind:value={modelCatalogSearch} placeholder="搜索 Hugging Face 视觉模型" aria-label="搜索 Hugging Face 视觉模型" />
+                  <button type="button" class="model-action" disabled={isCatalogRefreshing} onclick={() => void loadHuggingFaceCatalog(true)}>
+                    {isCatalogRefreshing ? '刷新中' : '刷新缓存'}
+                  </button>
+                </div>
+
+                <div class="hf-model-table" role="table" aria-label="Hugging Face 视觉模型">
+                  <div class="hf-model-head" role="row">
+                    <span>模型</span>
+                    <span>任务</span>
+                    <span>热度</span>
+                    <span>更新</span>
+                    <span>操作</span>
+                  </div>
+                  {#each visibleCatalogModels as model (model.id)}
+                    <div class={['hf-model-row', model.id === activeLocalModelId && 'active'].filter(Boolean).join(' ')} role="row">
+                      <div class="hf-model-name">
+                        <span class="model-icon">{model.name.slice(0, 1)}</span>
+                        <span>
+                          <strong>{model.name}</strong>
+                          <small>{model.repoId} · {model.fileName}</small>
+                        </span>
+                      </div>
+                      <span class="hf-model-meta"><b>任务</b>{model.task}<small>{model.license}</small></span>
+                      <span class="hf-model-meta"><b>热度</b>{formatCompactNumber(model.downloads)}<small>{model.likes} likes</small></span>
+                      <span class="hf-model-meta"><b>更新</b>{formatModelDate(model.lastModified)}<small>{model.updateAvailable ? '有新版本' : model.downloaded ? '本地最新' : model.author}</small></span>
+                      <span class="hf-model-action">
+                        <button
+                          type="button"
+                          class={['model-action', model.downloaded && !model.updateAvailable && 'done', model.updateAvailable && 'update'].filter(Boolean).join(' ')}
+                          disabled={modelActionDisabled(model)}
+                          onclick={() => void downloadCatalogModel(model)}
+                        >
+                          {modelActionLabel(model)}
+                        </button>
+                      </span>
+                    </div>
+                  {:else}
+                    <div class="hf-model-empty">没有匹配的视觉模型。</div>
+                  {/each}
+                </div>
+
+                {#if modelCatalogHasMore && !modelCatalogSearch.trim()}
+                  <button type="button" class="load-more-models" disabled={isLoadingMoreModels} onclick={() => void loadMoreHuggingFaceModels()}>
+                    {isLoadingMoreModels ? '加载中' : `加载更多 · ${modelCatalog.length} / ${modelCatalogTotal}`}
+                  </button>
+                {/if}
+
+                {#if downloadMessage}
+                  <p class="download-message">{downloadMessage}</p>
+                {/if}
+              </div>
+            {:else if activeProviderConfig}
+              <div class="provider-fields">
+                <label>
+                  <span>Provider ID</span>
+                  <input value={activeProviderConfig.id} readonly />
+                </label>
+                <label>
+                  <span>类型</span>
+                  <input value="@ai-sdk/openai-compatible" readonly />
+                </label>
+                <label>
+                  <span>显示名称</span>
+                  <input value={activeProviderConfig.name} oninput={(event) => updateProvider(activeProviderConfig.id, 'name', event.currentTarget.value)} />
+                </label>
+                <label>
+                  <span>Base URL</span>
+                  <input value={activeProviderConfig.baseUrl} placeholder="http://localhost:11434/v1" oninput={(event) => updateProvider(activeProviderConfig.id, 'baseUrl', event.currentTarget.value)} />
+                </label>
+                <label>
+                  <span>API Key</span>
+                  <input type="password" value={activeProviderConfig.apiKey} placeholder="本地服务可留空" oninput={(event) => updateProvider(activeProviderConfig.id, 'apiKey', event.currentTarget.value)} />
+                </label>
+                <label>
+                  <span>Model ID</span>
+                  <input value={activeProviderConfig.model} placeholder="llava:latest / gpt-4o-mini" oninput={(event) => updateProvider(activeProviderConfig.id, 'model', event.currentTarget.value)} />
+                </label>
+              </div>
+
+              <div id="models" class="remote-models">
+                <div class="model-library-title">
+                  <h4>Models</h4>
+                  <span>当前选中</span>
+                </div>
+                <div class="model-group">
+                  <button type="button" class="model-group-head">
+                    <span>⌄</span>
+                    <strong>{activeProviderConfig.name || activeProviderConfig.id}</strong>
+                  </button>
+                  <div class="remote-model-row">
+                    <span class="model-icon">{(activeProviderConfig.model || '?').slice(0, 1).toUpperCase()}</span>
+                    <div>
+                      <strong>{activeProviderConfig.model || '尚未填写模型 ID'}</strong>
+                      <small>{activeProviderConfig.baseUrl || '尚未配置 API Host'}</small>
+                    </div>
+                    <button type="button" class="model-action" onclick={() => selectProvider(activeProviderConfig.id)}>使用</button>
+                  </div>
+                </div>
+              </div>
+            {:else}
+              <div class="empty-provider">
+                <strong>未选择可用供应商</strong>
+                <span>请选择 llama.cpp 或添加一个 OpenAI-compatible provider。</span>
+              </div>
+            {/if}
+
+          </div>
         </div>
       </section>
 
@@ -407,21 +986,10 @@
       </div>
     </div>
   </main>
-  <footer class="statusbar">
-    <div class="side">
-      <span class="pip">引擎 · {activeProviderName}</span>
-      <span>{configPath}</span>
-    </div>
-    <div class="side">
-      <span>{dirtyCount ? `${dirtyCount} 项未保存` : '配置已保存'}</span>
-      <span>本地版</span>
-    </div>
-  </footer>
-</div>
 
 <style>
   .settings-wrap {
-    max-width: 920px;
+    max-width: 1180px;
     padding: 36px 48px 64px;
   }
 
@@ -470,127 +1038,487 @@
     line-height: 1.65;
   }
 
-  .providers {
+  .provider-workspace {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-  }
-
-  .provider {
-    display: flex;
-    min-height: 154px;
-    flex-direction: column;
-    gap: 8px;
-    border: 1px solid var(--border);
+    grid-template-columns: 320px minmax(0, 1fr);
+    min-height: 560px;
+    overflow: hidden;
+    border: 1px solid #e7e7e2;
     border-radius: 8px;
-    background: var(--surface);
-    padding: 16px;
-    text-align: left;
+    background: #fff;
+    box-shadow: var(--shadow-soft);
   }
 
-  .provider.active {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
+  .provider-directory {
+    display: grid;
+    grid-auto-rows: max-content;
+    gap: 8px;
+    border-right: 1px solid #ecece8;
+    background: #fbfbfa;
+    padding: 14px 12px;
   }
 
-  .provider-row,
-  .provider-meta {
+  .directory-search input {
+    width: 100%;
+    border-radius: 999px;
+    background: #fff;
+    padding: 10px 14px;
+  }
+
+  .directory-divider,
+  .model-library-title,
+  .draft-actions,
+  .provider-head-actions {
     display: flex;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
   }
 
-  .provider-row strong {
-    font-family: var(--font-display);
-    font-size: 15px;
-    font-weight: 500;
-  }
-
-  .provider-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
+  .directory-divider {
+    margin: 8px 4px 2px;
     color: var(--meta);
     font-family: var(--font-mono);
     font-size: 10px;
     text-transform: uppercase;
   }
 
-  .provider-status::before {
-    width: 6px;
-    height: 6px;
+  .provider-list-item {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 11px;
+    min-height: 54px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    padding: 8px 10px;
+    text-align: left;
+  }
+
+  .provider-list-item:hover,
+  .provider-list-item.active {
+    border-color: #d7e9df;
+    background: #fff;
+  }
+
+  .provider-list-item.active {
+    box-shadow: 0 8px 18px rgba(20, 20, 19, 0.055);
+  }
+
+  .provider-avatar,
+  .model-icon {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
     border-radius: 50%;
-    background: var(--meta);
-    content: "";
+    background: #edf4ff;
+    color: #295b92;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
   }
 
-  .provider-status.on::before {
-    background: var(--success);
+  .provider-avatar.local {
+    background: #eef8f2;
+    color: #167246;
   }
 
-  .provider-desc {
-    flex: 1;
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.55;
+  .provider-list-copy,
+  .model-row-copy {
+    min-width: 0;
   }
 
-  .provider-meta {
+  .provider-list-copy strong,
+  .model-row-copy strong,
+  .remote-model-row strong {
+    display: block;
+    overflow: hidden;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .provider-list-copy small,
+  .model-row-copy small,
+  .remote-model-row small {
+    display: block;
+    overflow: hidden;
+    color: #8b8a84;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .provider-pill,
+  .model-state {
+    border: 1px solid #e4e2db;
+    border-radius: 999px;
+    background: #f6f5f0;
+    color: #7a7770;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 3px 8px;
+  }
+
+  .provider-pill.on,
+  .provider-pill.local,
+  .model-state.ready {
+    border-color: #bce7cf;
+    background: #effaf4;
+    color: #167246;
+  }
+
+  .provider-add-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 40px;
+    border: 1px solid #e1dfd6;
+    border-radius: 999px;
+    background: #fff;
+    color: var(--fg-2);
+    font-weight: 700;
+  }
+
+  .provider-add-button span {
+    font-size: 20px;
+    line-height: 1;
+  }
+
+  .provider-workspace button:focus {
+    outline: none;
+  }
+
+  .provider-workspace button:focus-visible,
+  .provider-workspace input:focus-visible {
+    outline: 2px solid rgba(16, 185, 129, 0.28);
+    outline-offset: 2px;
+  }
+
+  .provider-draft {
+    display: grid;
+    gap: 10px;
+    border: 1px solid #e7e7e2;
+    border-radius: 8px;
+    background: #fff;
+    padding: 12px;
+  }
+
+  .provider-draft label,
+  .provider-fields label {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .provider-draft span,
+  .provider-fields span,
+  .field-caption {
     color: var(--meta);
     font-family: var(--font-mono);
     font-size: 10px;
+    text-transform: uppercase;
   }
 
-  .model-list {
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-  }
-
-  .model-row-item {
+  .provider-panel {
     display: grid;
-    grid-template-columns: 24px 1fr auto auto auto;
-    align-items: center;
-    gap: 14px;
-    border-bottom: 1px solid var(--border-soft);
-    background: var(--surface);
-    padding: 14px 16px;
+    align-content: start;
+    gap: 22px;
+    min-width: 0;
+    background: #fff;
+    padding: 24px 28px 30px;
   }
 
-  .model-row-item:last-child {
+  .provider-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 52px;
+    border-bottom: 1px solid #ecece8;
+    padding-bottom: 18px;
+  }
+
+  .provider-panel-head h3 {
+    margin: 0 0 4px;
+    color: var(--fg);
+    font-size: 18px;
+    font-weight: 800;
+  }
+
+  .provider-panel-head p {
+    margin: 0;
+    color: #8b8a84;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .provider-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 16px;
+  }
+
+  .provider-fields.single {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .provider-fields.single p {
+    margin: 0;
+    color: #8b8a84;
+    font-size: 12px;
+  }
+
+  input[readonly] {
+    color: var(--meta);
+    cursor: default;
+  }
+
+  .model-library,
+  .remote-models {
+    display: grid;
+    gap: 12px;
+  }
+
+  .model-library-title h4 {
+    margin: 0;
+    color: var(--fg);
+    font-size: 16px;
+    font-weight: 800;
+  }
+
+  .model-library-title span {
+    color: #8b8a84;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .model-catalog-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+
+  .model-catalog-toolbar input {
+    width: 100%;
+    border-radius: 999px;
+    background: #fff;
+    padding: 10px 14px;
+  }
+
+  .hf-model-table {
+    overflow: hidden;
+    border: 1px solid #ecece8;
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .hf-model-head,
+  .hf-model-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 1fr) 74px 54px 64px 62px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px;
+  }
+
+  .hf-model-head {
+    min-height: 42px;
+    border-bottom: 1px solid #ecece8;
+    background: #f6f6f4;
+    color: #7c7971;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+  }
+
+  .hf-model-row {
+    min-height: 70px;
+    border-bottom: 1px solid #f1f0ed;
+  }
+
+  .hf-model-row:last-child {
     border-bottom: 0;
   }
 
-  .model-row-item.active {
-    background: var(--tag-bg-faint);
+  .hf-model-row:hover,
+  .hf-model-row.active {
+    background: #fbfcff;
   }
 
-  .model-state {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--border);
+  .hf-model-row.active {
+    box-shadow: inset 3px 0 0 #10b981;
   }
 
-  .model-row-item.active .model-state {
-    background: var(--success);
+  .hf-model-name {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
   }
 
-  .model-row-item strong {
+  .hf-model-name strong {
     display: block;
-    font-family: var(--font-display);
-    font-size: 15px;
-    font-weight: 500;
+    overflow: hidden;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .model-row-item small {
-    color: var(--meta);
+  .hf-model-name small,
+  .hf-model-meta small {
+    display: block;
+    overflow: hidden;
+    color: #8b8a84;
     font-family: var(--font-mono);
     font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .model-size,
-  .model-speed,
+  .hf-model-meta {
+    min-width: 0;
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hf-model-meta b {
+    display: none;
+  }
+
+  .hf-model-action {
+    justify-self: end;
+  }
+
+  .hf-model-empty {
+    color: var(--meta);
+    padding: 18px;
+  }
+
+  .load-more-models {
+    width: 100%;
+    min-height: 38px;
+    border: 1px solid #e1dfd6;
+    border-radius: 999px;
+    background: #fff;
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .load-more-models:disabled {
+    color: var(--meta);
+    cursor: progress;
+  }
+
+  .model-group {
+    overflow: hidden;
+    border: 1px solid #ecece8;
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .model-group-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 44px;
+    border-bottom: 1px solid #ecece8;
+    background: #f6f6f4;
+    padding: 0 16px;
+    text-align: left;
+  }
+
+  .model-group-head span {
+    color: #5f5d57;
+    font-size: 15px;
+  }
+
+  .model-group-head strong {
+    color: var(--fg-2);
+    font-size: 14px;
+    font-weight: 800;
+  }
+
+  .model-row-button,
+  .remote-model-row {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 68px;
+    border-bottom: 1px solid #f1f0ed;
+    background: #fff;
+    padding: 12px 18px;
+    text-align: left;
+  }
+
+  .model-row-button:last-child,
+  .remote-model-row:last-child {
+    border-bottom: 0;
+  }
+
+  .model-row-button:hover,
+  .model-row-button.active {
+    background: #fbfcff;
+  }
+
+  .model-row-button.active {
+    box-shadow: inset 3px 0 0 #10b981;
+  }
+
+  .empty-provider {
+    display: grid;
+    gap: 14px;
+    border: 1px solid #e1eee7;
+    border-radius: 8px;
+    background: #fbfffd;
+    padding: 16px;
+  }
+
+  input,
+  select {
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    padding: 7px 10px;
+  }
+
+  input::placeholder {
+    color: var(--meta);
+  }
+
+  .text-action {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .text-action.danger {
+    color: var(--danger);
+  }
+
   .model-action,
   .form-value {
     color: var(--fg-2);
@@ -609,10 +1537,30 @@
     text-transform: uppercase;
   }
 
-  .model-row-item.active .model-action {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: var(--accent-on);
+  .model-action:disabled {
+    border-color: var(--border-soft);
+    color: var(--meta);
+    cursor: not-allowed;
+  }
+
+  .model-action.done {
+    border-color: #bce7cf;
+    background: #effaf4;
+    color: #167246;
+  }
+
+  .model-action.update {
+    border-color: #f0d292;
+    background: #fff7df;
+    color: #8a5a00;
+  }
+
+  .download-message {
+    color: var(--meta);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    margin: 10px 0 0;
+    overflow-wrap: anywhere;
   }
 
   .form-row {
@@ -654,15 +1602,6 @@
     color: var(--fg);
     font-family: var(--font-mono);
     font-size: 12px;
-  }
-
-  select {
-    min-width: 160px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--fg);
-    padding: 7px 12px;
   }
 
   .toggle {
@@ -849,14 +1788,73 @@
   }
 
   @media (max-width: 1000px) {
-    .providers {
+    .provider-workspace {
       grid-template-columns: 1fr;
     }
 
-    .model-row-item,
+    .provider-directory {
+      border-right: 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .provider-fields {
+      grid-template-columns: 1fr;
+    }
+
     .form-row {
       grid-template-columns: 1fr;
       align-items: start;
+    }
+
+    .provider-panel-head,
+    .remote-model-row,
+    .model-row-button,
+    .hf-model-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .remote-model-row,
+    .model-row-button {
+      grid-template-columns: 34px minmax(0, 1fr);
+    }
+
+    .remote-model-row .model-action,
+    .model-row-button .model-state {
+      grid-column: 2;
+      justify-self: start;
+    }
+
+    .hf-model-head {
+      display: none;
+    }
+
+    .hf-model-row {
+      grid-template-columns: 1fr;
+      align-items: start;
+      gap: 8px;
+      padding: 14px;
+    }
+
+    .hf-model-action {
+      justify-self: start;
+    }
+
+    .hf-model-meta {
+      white-space: normal;
+    }
+
+    .hf-model-meta b {
+      display: block;
+      color: #9a978f;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+
+    .model-catalog-toolbar {
+      grid-template-columns: 1fr;
     }
 
     .save-bar,

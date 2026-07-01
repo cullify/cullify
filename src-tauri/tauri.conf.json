@@ -16,7 +16,14 @@
         "width": 1280,
         "height": 820,
         "minWidth": 1024,
-        "minHeight": 720
+        "minHeight": 720,
+        "decorations": true,
+        "titleBarStyle": "Transparent",
+        "trafficLightPosition": {
+          "x": 18,
+          "y": 18
+        },
+        "hiddenTitle": true
       }
     ],
     "security": {

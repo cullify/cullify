@@ -1,6 +1,6 @@
 <script lang="ts">
   import { resolve } from '$app/paths';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import InspectorPanel from '$lib/components/InspectorPanel.svelte';
   import PhotoTile from '$lib/components/PhotoTile.svelte';
   import { describeExportError } from '$lib/exportMessages';
@@ -17,6 +17,7 @@
     tryListProjects
   } from '$lib/backend';
   import { photos as seedPhotos, projects as mockProjects } from '$lib/mockData';
+  import { getShellContext } from '$lib/shell.svelte';
   import type { Decision, FilterMode, Photo, Project } from '$lib/types';
 
   type SortMode = 'quality-desc' | 'quality-asc' | 'name-asc' | 'time-asc';
@@ -113,6 +114,7 @@
     { id: 'time-asc', label: '拍摄时间 早到晚' }
   ];
   const activeSortLabel = $derived(sortOptions.find((option) => option.id === sortMode)?.label ?? '质量分 高到低');
+  const shell = getShellContext();
 
   const filters: Array<{ id: FilterMode; label: string; count: () => number }> = [
     { id: 'all', label: '全部', count: () => groupedPhotos.length },
@@ -124,6 +126,31 @@
   onMount(() => {
     void loadShortcuts();
     loadActiveProject();
+  });
+
+  onDestroy(() => {
+    shell.resetPage();
+  });
+
+  $effect(() => {
+    shell.configure({
+      active: 'cull',
+      title: '照片挑选',
+      subtitle: `${project.shortName} · ${project.mode} · ${photos.length.toLocaleString()} 张`,
+      cullCount: String(photos.length),
+      sidebarExtra: cullSidebar,
+      showDefaultSidebarDetails: false,
+      footer: {
+        photo: `照片 ${currentPosition} / ${photos.length}`,
+        analysis: `${project.statusLabel} · 保留 ${keptCount} · 淘汰 ${culledCount} · 待定 ${pendingCount}`,
+        model: project.mode === 'quick' ? '快速模式 · Rust 原生分析' : `${project.mode} · 模型队列待接入`,
+        resources: {
+          cpu: isLoadingProject || isBatchUpdating ? 'CPU 写入中' : 'CPU 待机',
+          memory: `内存 已加载 ${photos.length.toLocaleString()} 张`,
+          gpu: '显存 未占用'
+        }
+      }
+    });
   });
 
   async function loadShortcuts() {
@@ -541,54 +568,41 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="app-shell cull-shell">
-  <aside class="sidebar">
-    <a class="brand" href={resolve('/')}>
-      <span class="brand-mark">Cullify</span>
-      <span class="brand-ver">v0.1.0</span>
-    </a>
+{#snippet cullSidebar()}
+  <div class="mode-switch">
+    <span class={project.mode === 'quick' ? 'active' : ''}>快速</span>
+    <span class={project.mode === 'expert' ? 'active' : 'planned'}>专家</span>
+    <span class={project.mode === 'arena' ? 'active' : 'planned'}>竞技场</span>
+  </div>
 
-    <div class="nav-section">
-      <p class="nav-eyebrow">导航</p>
-      <a class="nav-item" href={resolve('/')}>主控台</a>
-      <a class="nav-item active" href={resolve('/cull')}><span>照片挑选</span><span class="nav-count">{project.total.toLocaleString()}</span></a>
-      <a class="nav-item" href={resolve('/settings')}>设置</a>
-    </div>
+  <div class="project-meta">
+    <p class="meta-heading">项目</p>
+    <div class="meta-row"><span>名称</span><span class="meta-value">{project.shortName}</span></div>
+    <div class="meta-row"><span>模式</span><span class="meta-value">{project.mode}</span></div>
+    <div class="meta-row"><span>状态</span><span class="meta-value">{project.statusLabel}</span></div>
+    <p class="meta-heading">照片</p>
+    <div class="meta-row"><span>总数</span><span class="meta-value">{photos.length}</span></div>
+    <div class="meta-row"><span>保留</span><span class="meta-value">{keptCount}</span></div>
+    <div class="meta-row"><span>淘汰</span><span class="meta-value">{culledCount}</span></div>
+    <div class="meta-row"><span>待定</span><span class="meta-value">{pendingCount}</span></div>
+  </div>
 
-    <div class="mode-switch">
-      <span class={project.mode === 'quick' ? 'active' : ''}>快速</span>
-      <span class={project.mode === 'expert' ? 'active' : 'planned'}>专家</span>
-      <span class={project.mode === 'arena' ? 'active' : 'planned'}>竞技场</span>
-    </div>
+  <p class="nav-eyebrow group-title">连拍组</p>
+  <div class="group-list">
+    {#each sidebarGroups as group (group.id)}
+      <button
+        type="button"
+        class={['group-item', activeGroup === group.id && 'active'].filter(Boolean).join(' ')}
+        onclick={() => chooseGroup(group.id)}
+      >
+        <span>{group.name}</span>
+        <span>{group.count}</span>
+      </button>
+    {/each}
+  </div>
+{/snippet}
 
-    <div class="project-meta">
-      <p class="meta-heading">项目</p>
-      <div class="meta-row"><span>名称</span><span class="meta-value">{project.shortName}</span></div>
-      <div class="meta-row"><span>模式</span><span class="meta-value">{project.mode}</span></div>
-      <div class="meta-row"><span>状态</span><span class="meta-value">{project.statusLabel}</span></div>
-      <p class="meta-heading">照片</p>
-      <div class="meta-row"><span>总数</span><span class="meta-value">{photos.length}</span></div>
-      <div class="meta-row"><span>保留</span><span class="meta-value">{keptCount}</span></div>
-      <div class="meta-row"><span>淘汰</span><span class="meta-value">{culledCount}</span></div>
-      <div class="meta-row"><span>待定</span><span class="meta-value">{pendingCount}</span></div>
-    </div>
-
-    <p class="nav-eyebrow group-title">连拍组</p>
-    <div class="group-list">
-      {#each sidebarGroups as group (group.id)}
-        <button
-          type="button"
-          class={['group-item', activeGroup === group.id && 'active'].filter(Boolean).join(' ')}
-          onclick={() => chooseGroup(group.id)}
-        >
-          <span>{group.name}</span>
-          <span>{group.count}</span>
-        </button>
-      {/each}
-    </div>
-  </aside>
-
-  <main class="app-main cull-main">
+<main class="app-main cull-main">
     <section class="workspace">
       <header class="toolbar">
         <div class="toolbar-left">
@@ -692,22 +706,7 @@
     </section>
   </main>
 
-  <footer class="statusbar">
-    <div class="side">
-      <span class="pip">{project.statusLabel} · {project.mode} 模式</span>
-      <span>当前 {currentPosition} / {photos.length}</span>
-      <span>保留 {keptCount} · 淘汰 {culledCount}</span>
-    </div>
-    <div class="side">
-      <span>已加载 {photos.length} 张照片</span>
-      {#if filteredPhotos.length > visibleFilteredPhotos.length}
-        <span>已渲染 {visibleFilteredPhotos.length} / {filteredPhotos.length}</span>
-      {/if}
-      <span>本地版</span>
-    </div>
-  </footer>
-
-  {#if isLightboxOpen && selectedPhoto}
+{#if isLightboxOpen && selectedPhoto}
     <div class="lightbox" role="dialog" aria-modal="true" aria-label={`灯箱查看 ${selectedPhoto.name}`}>
       <div class="lightbox-top">
         <div>
@@ -752,8 +751,7 @@
         </div>
       </div>
     </div>
-  {/if}
-</div>
+{/if}
 
 <style>
   .cull-main {

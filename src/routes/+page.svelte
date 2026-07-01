@@ -1,7 +1,6 @@
 <script lang="ts">
   import { resolve } from '$app/paths';
-  import { onMount } from 'svelte';
-  import AppShell from '$lib/components/AppShell.svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     backendProjectToProject,
     createProjectFromPickedFolderWithOutcome,
@@ -12,6 +11,7 @@
     tryListProjects
   } from '$lib/backend';
   import { projects as mockProjects, shortcuts } from '$lib/mockData';
+  import { getShellContext } from '$lib/shell.svelte';
   import type { CullMode, Project, Shortcut } from '$lib/types';
 
   type ModeCard = {
@@ -70,17 +70,42 @@
   let isCreating = $state(false);
   let createMessage = $state('');
   let createMessageTone = $state<'info' | 'success' | 'error'>('info');
-  let appDataDir = $state('桌面环境可用');
 
   const totalProcessed = $derived(projects.reduce((total, project) => total + project.total, 0));
   const totalCulled = $derived(projects.reduce((total, project) => total + project.culled, 0));
   const cullRatio = $derived(totalProcessed ? Math.round((totalCulled / totalProcessed) * 100) : 0);
   const statusSummary = $derived(isDemoData ? '浏览器演示数据' : `${projects.length} 个本地项目`);
-  const databasePath = $derived(appDataDir === '桌面环境可用' ? '桌面数据目录' : `${appDataDir}/cullify.db`);
+  const shell = getShellContext();
 
   onMount(() => {
     void loadShortcuts();
     void refreshProjects();
+  });
+
+  onDestroy(() => {
+    shell.resetPage();
+  });
+
+  $effect(() => {
+    shell.configure({
+      active: 'dashboard',
+      title: '主控台',
+      subtitle: '本地离线 AI 照片选片 · 数据不出本机',
+      recentProjects: projects,
+      cullCount: String(totalProcessed),
+      showDefaultSidebarDetails: true,
+      sidebarExtra: null,
+      footer: {
+        photo: `照片 ${totalProcessed.toLocaleString()} / ${totalProcessed.toLocaleString()}`,
+        analysis: isCreating ? '正在扫描并分析照片' : `${statusSummary} · 淘汰 ${cullRatio}%`,
+        model: '快速模式 · 无模型占用',
+        resources: {
+          cpu: isCreating ? 'CPU 扫描中' : 'CPU 待机',
+          memory: isDemoData ? '内存 演示数据' : '内存 本地索引',
+          gpu: '显存 未占用'
+        }
+      }
+    });
   });
 
   async function refreshProjects() {
@@ -94,7 +119,6 @@
   async function loadShortcuts() {
     const envelope = await tryLoadAppConfig();
     const configuredShortcuts = envelope?.config.shortcuts ?? defaultAppConfig.shortcuts;
-    appDataDir = envelope?.appDataDir ?? '桌面环境可用';
     shortcutRows = shortcuts.map((shortcut) => ({
       ...shortcut,
       keys: configuredShortcuts.find((item) => item.id === shortcut.id)?.keys ?? [...shortcut.keys]
@@ -231,14 +255,7 @@
   }
 </script>
 
-<AppShell
-  active="dashboard"
-  recentProjects={projects}
-  cullCount={String(totalProcessed)}
-  statusLeft={['引擎就绪 · 快速模式可用', statusSummary, '数据 · 本机']}
-  statusRight={[databasePath, '本地版']}
->
-  <main class="app-main scroll">
+<main class="app-main scroll">
     <div class="page-pad">
       <header class="topbar">
         <div>
@@ -380,7 +397,6 @@
       </section>
     </div>
   </main>
-</AppShell>
 
 <style>
   .actions {

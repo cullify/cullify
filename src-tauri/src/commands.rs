@@ -1,9 +1,14 @@
 use std::{
-    fs,
+    collections::HashMap,
+    fs, io,
     path::{Path, PathBuf},
     sync::Arc,
+    thread,
 };
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sysinfo::{ProcessesToUpdate, System};
 use tauri::{Manager, State};
 
 use crate::{
@@ -28,6 +33,37 @@ impl AppState {
             app_data_dir,
         })
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemResourceSnapshot {
+    pub cpu_usage: f32,
+    pub app_memory_bytes: u64,
+    pub used_memory_bytes: u64,
+    pub total_memory_bytes: u64,
+}
+
+#[tauri::command]
+pub fn system_resource_snapshot() -> Result<SystemResourceSnapshot, String> {
+    let mut system = System::new_all();
+    system.refresh_cpu_all();
+    system.refresh_memory();
+
+    let app_memory_bytes = sysinfo::get_current_pid()
+        .ok()
+        .and_then(|pid| {
+            system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+            system.process(pid).map(|process| process.memory())
+        })
+        .unwrap_or(0);
+
+    Ok(SystemResourceSnapshot {
+        cpu_usage: system.global_cpu_usage(),
+        app_memory_bytes,
+        used_memory_bytes: system.used_memory(),
+        total_memory_bytes: system.total_memory(),
+    })
 }
 
 #[tauri::command]
@@ -134,6 +170,104 @@ pub fn save_app_config(
     crate::config::save_app_config(&state.app_data_dir, &config).map_err(Into::into)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadModelRequest {
+    pub model_id: String,
+    pub file_name: String,
+    pub download_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadModelSummary {
+    pub model_id: String,
+    pub path: String,
+    pub bytes: u64,
+}
+
+#[tauri::command]
+pub fn download_model(
+    request: DownloadModelRequest,
+    state: State<'_, AppState>,
+) -> Result<DownloadModelSummary, String> {
+    download_model_inner(request, &state.app_data_dir).map_err(Into::into)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HuggingFaceVisionModel {
+    pub id: String,
+    pub repo_id: String,
+    pub name: String,
+    pub author: String,
+    pub task: String,
+    pub license: String,
+    pub file_name: String,
+    pub download_url: String,
+    pub downloads: u64,
+    pub likes: u64,
+    pub last_modified: String,
+    pub downloaded: bool,
+    pub update_available: bool,
+    pub local_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HuggingFaceCatalogRequest {
+    pub offset: usize,
+    pub limit: usize,
+    pub refresh: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HuggingFaceCatalogPage {
+    pub models: Vec<HuggingFaceVisionModel>,
+    pub total: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub has_more: bool,
+    pub cache_date: String,
+    pub refreshed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HuggingFaceModelResponse {
+    id: Option<String>,
+    model_id: Option<String>,
+    author: Option<String>,
+    downloads: Option<u64>,
+    likes: Option<u64>,
+    last_modified: Option<String>,
+    pipeline_tag: Option<String>,
+    tags: Option<Vec<String>>,
+    siblings: Option<Vec<HuggingFaceSibling>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HuggingFaceSibling {
+    rfilename: String,
+}
+
+#[tauri::command]
+pub fn list_huggingface_vision_models(
+    request: HuggingFaceCatalogRequest,
+    state: State<'_, AppState>,
+) -> Result<HuggingFaceCatalogPage, String> {
+    list_huggingface_vision_models_inner(&state.app_data_dir, request).map_err(Into::into)
+}
+
+pub fn start_huggingface_catalog_refresh(app_data_dir: PathBuf) {
+    thread::spawn(move || {
+        if let Err(error) = refresh_huggingface_catalog_if_needed(&app_data_dir) {
+            eprintln!("Unable to refresh Hugging Face model catalog cache: {error}");
+        }
+    });
+}
+
 #[tauri::command]
 pub fn export_project(
     project_id: String,
@@ -147,6 +281,369 @@ pub fn export_project(
         crate::export::export_project(&state.db, &project_id, &state.app_data_dir)
             .map_err(Into::into)
     }
+}
+
+fn download_model_inner(
+    request: DownloadModelRequest,
+    app_data_dir: &Path,
+) -> AppResult<DownloadModelSummary> {
+    if request.model_id.trim().is_empty() {
+        return Err(AppError::InvalidModelDownload(
+            "model id cannot be empty".to_string(),
+        ));
+    }
+    let download_url = request.download_url.trim();
+    if !(download_url.starts_with("https://") || download_url.starts_with("http://")) {
+        return Err(AppError::InvalidModelDownload(
+            "download URL must start with http:// or https://".to_string(),
+        ));
+    }
+
+    let file_name = Path::new(request.file_name.trim())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| AppError::InvalidModelDownload("file name is invalid".to_string()))?;
+
+    let models_dir = app_data_dir.join("models");
+    fs::create_dir_all(&models_dir)?;
+    let target_path = models_dir.join(file_name);
+    let temp_path = models_dir.join(format!("{file_name}.download"));
+
+    let mut response = reqwest::blocking::Client::builder()
+        .user_agent("Cullify/0.1 model downloader")
+        .build()?
+        .get(download_url)
+        .send()?
+        .error_for_status()?;
+
+    let mut output = fs::File::create(&temp_path)?;
+    let bytes = io::copy(&mut response, &mut output)?;
+    fs::rename(&temp_path, &target_path)?;
+
+    Ok(DownloadModelSummary {
+        model_id: request.model_id,
+        path: target_path.to_string_lossy().to_string(),
+        bytes,
+    })
+}
+
+fn list_huggingface_vision_models_inner(
+    app_data_dir: &Path,
+    request: HuggingFaceCatalogRequest,
+) -> AppResult<HuggingFaceCatalogPage> {
+    cleanup_old_huggingface_catalog_caches(app_data_dir)?;
+    let refreshed = request.refresh;
+    if request.refresh {
+        let remote_models = fetch_huggingface_vision_models()?;
+        save_huggingface_catalog_cache(app_data_dir, &remote_models)?;
+    }
+
+    let mut models = load_huggingface_catalog_cache(app_data_dir).unwrap_or_default();
+    overlay_local_model_status(&mut models, app_data_dir)?;
+
+    let total = models.len();
+    let limit = request.limit.clamp(1, 50);
+    let offset = request.offset.min(total);
+    let end = (offset + limit).min(total);
+    Ok(HuggingFaceCatalogPage {
+        models: models[offset..end].to_vec(),
+        total,
+        offset,
+        limit,
+        has_more: end < total,
+        cache_date: today_cache_key(),
+        refreshed,
+    })
+}
+
+fn refresh_huggingface_catalog_if_needed(app_data_dir: &Path) -> AppResult<()> {
+    cleanup_old_huggingface_catalog_caches(app_data_dir)?;
+    let cache_path = huggingface_catalog_cache_path(app_data_dir);
+    if cache_path.exists() {
+        return Ok(());
+    }
+    let models = fetch_huggingface_vision_models()?;
+    save_huggingface_catalog_cache(app_data_dir, &models)
+}
+
+fn fetch_huggingface_vision_models() -> AppResult<Vec<HuggingFaceVisionModel>> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Cullify/0.1 model catalog")
+        .build()?;
+    let endpoints = [
+        "https://huggingface.co/api/models?filter=image-text-to-text&full=true&sort=downloads&direction=-1&limit=200",
+        "https://huggingface.co/api/models?filter=image-to-text&full=true&sort=downloads&direction=-1&limit=200",
+        "https://huggingface.co/api/models?search=vision%20gguf&full=true&sort=downloads&direction=-1&limit=200",
+        "https://huggingface.co/api/models?search=llava%20gguf&full=true&sort=downloads&direction=-1&limit=200",
+        "https://huggingface.co/api/models?search=vl%20gguf&full=true&sort=downloads&direction=-1&limit=200",
+    ];
+
+    let mut models = Vec::new();
+    for endpoint in endpoints {
+        let response_text = client.get(endpoint).send()?.error_for_status()?.text()?;
+        let response = serde_json::from_str::<Vec<HuggingFaceModelResponse>>(&response_text)?;
+        for model in response {
+            if let Some(catalog_model) = catalog_model_from_response(model) {
+                models.push(catalog_model);
+            }
+        }
+    }
+
+    let mut deduped = HashMap::<String, HuggingFaceVisionModel>::new();
+    for model in models {
+        deduped
+            .entry(format!("{}:{}", model.repo_id, model.file_name))
+            .and_modify(|existing| {
+                if model.downloads > existing.downloads {
+                    *existing = model.clone();
+                }
+            })
+            .or_insert(model);
+    }
+
+    let mut models = deduped.into_values().collect::<Vec<_>>();
+    models.sort_by(|left, right| {
+        right
+            .downloads
+            .cmp(&left.downloads)
+            .then_with(|| left.repo_id.cmp(&right.repo_id))
+    });
+    models.truncate(200);
+    Ok(models)
+}
+
+fn catalog_model_from_response(model: HuggingFaceModelResponse) -> Option<HuggingFaceVisionModel> {
+    let repo_id = model.model_id.or(model.id)?;
+    let tags = model.tags.unwrap_or_default();
+    let siblings = model.siblings.unwrap_or_default();
+    let file_name = preferred_gguf_file(&siblings)?;
+    if !is_supported_vision_model(&repo_id, &tags, model.pipeline_tag.as_deref()) {
+        return None;
+    }
+
+    let file_basename = Path::new(&file_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&file_name)
+        .to_string();
+
+    Some(HuggingFaceVisionModel {
+        id: local_model_id_from_repo(&repo_id, &file_basename),
+        name: display_name_from_repo(&repo_id),
+        author: model.author.unwrap_or_else(|| {
+            repo_id
+                .split('/')
+                .next()
+                .unwrap_or("huggingface")
+                .to_string()
+        }),
+        task: model
+            .pipeline_tag
+            .or_else(|| {
+                tags.iter()
+                    .find(|tag| tag.contains("image") || *tag == "vision")
+                    .cloned()
+            })
+            .unwrap_or_else(|| "vision-language".to_string()),
+        license: tags
+            .iter()
+            .find_map(|tag| tag.strip_prefix("license:").map(str::to_string))
+            .unwrap_or_else(|| "未标注".to_string()),
+        file_name: file_basename,
+        download_url: format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            repo_id,
+            encode_huggingface_path(&file_name)
+        ),
+        repo_id,
+        downloads: model.downloads.unwrap_or(0),
+        likes: model.likes.unwrap_or(0),
+        last_modified: model.last_modified.unwrap_or_else(|| "unknown".to_string()),
+        downloaded: false,
+        update_available: false,
+        local_path: None,
+    })
+}
+
+fn overlay_local_model_status(
+    models: &mut [HuggingFaceVisionModel],
+    app_data_dir: &Path,
+) -> AppResult<()> {
+    let local_files = local_model_file_index(&app_data_dir.join("models"))?;
+    for model in models {
+        let local = local_files.get(&model.file_name.to_lowercase());
+        let remote_modified = DateTime::parse_from_rfc3339(&model.last_modified)
+            .ok()
+            .map(|value| value.with_timezone(&Utc));
+        model.downloaded = local.is_some();
+        model.local_path = local.map(|file| file.path.clone());
+        model.update_available = match (local, remote_modified) {
+            (Some(local), Some(remote)) => local.modified < remote,
+            _ => false,
+        };
+    }
+    Ok(())
+}
+
+fn huggingface_catalog_cache_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("cache").join("huggingface-models")
+}
+
+fn huggingface_catalog_cache_path(app_data_dir: &Path) -> PathBuf {
+    huggingface_catalog_cache_dir(app_data_dir).join(format!("{}.json", today_cache_key()))
+}
+
+fn today_cache_key() -> String {
+    Utc::now().format("%Y-%m-%d").to_string()
+}
+
+fn load_huggingface_catalog_cache(app_data_dir: &Path) -> AppResult<Vec<HuggingFaceVisionModel>> {
+    let path = huggingface_catalog_cache_path(app_data_dir);
+    let cache = fs::read_to_string(path)?;
+    serde_json::from_str(&cache).map_err(Into::into)
+}
+
+fn save_huggingface_catalog_cache(
+    app_data_dir: &Path,
+    models: &[HuggingFaceVisionModel],
+) -> AppResult<()> {
+    let cache_dir = huggingface_catalog_cache_dir(app_data_dir);
+    fs::create_dir_all(&cache_dir)?;
+    fs::write(
+        huggingface_catalog_cache_path(app_data_dir),
+        serde_json::to_string_pretty(models)?,
+    )?;
+    Ok(())
+}
+
+fn cleanup_old_huggingface_catalog_caches(app_data_dir: &Path) -> AppResult<()> {
+    let cache_dir = huggingface_catalog_cache_dir(app_data_dir);
+    if !cache_dir.exists() {
+        return Ok(());
+    }
+    let today = format!("{}.json", today_cache_key());
+    for entry in fs::read_dir(cache_dir)? {
+        let entry = entry?;
+        if entry.file_name().to_str() != Some(today.as_str()) {
+            let path = entry.path();
+            if path.is_file() {
+                fs::remove_file(path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn preferred_gguf_file(siblings: &[HuggingFaceSibling]) -> Option<String> {
+    let mut files = siblings
+        .iter()
+        .map(|sibling| sibling.rfilename.as_str())
+        .filter(|file| file.to_lowercase().ends_with(".gguf"))
+        .filter(|file| !file.to_lowercase().contains("mmproj"))
+        .collect::<Vec<_>>();
+    files.sort_by_key(|file| {
+        let lower = file.to_lowercase();
+        if lower.contains("q4_k_m") {
+            0
+        } else if lower.contains("q5_k_m") {
+            1
+        } else if lower.contains("q8_0") {
+            2
+        } else if lower.contains("q4") {
+            3
+        } else {
+            9
+        }
+    });
+    files.first().map(|file| (*file).to_string())
+}
+
+fn is_supported_vision_model(repo_id: &str, tags: &[String], pipeline_tag: Option<&str>) -> bool {
+    let searchable = format!(
+        "{} {}",
+        repo_id.to_lowercase(),
+        tags.join(" ").to_lowercase()
+    );
+    let has_gguf = tags.iter().any(|tag| tag == "gguf") || repo_id.to_lowercase().contains("gguf");
+    let visual = pipeline_tag
+        .map(|tag| tag.contains("image"))
+        .unwrap_or(false)
+        || searchable.contains("image-text-to-text")
+        || searchable.contains("image-to-text")
+        || searchable.contains("vision")
+        || searchable.contains("multimodal")
+        || searchable.contains("llava")
+        || searchable.contains("-vl")
+        || searchable.contains("vl-");
+    has_gguf && visual
+}
+
+#[derive(Debug)]
+struct LocalModelFile {
+    path: String,
+    modified: DateTime<Utc>,
+}
+
+fn local_model_file_index(models_dir: &Path) -> AppResult<HashMap<String, LocalModelFile>> {
+    let mut files = HashMap::new();
+    if !models_dir.exists() {
+        return Ok(files);
+    }
+    for entry in fs::read_dir(models_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("gguf") {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let modified = entry
+            .metadata()?
+            .modified()
+            .map(DateTime::<Utc>::from)
+            .unwrap_or_else(|_| Utc::now());
+        files.insert(
+            file_name.to_lowercase(),
+            LocalModelFile {
+                path: path.to_string_lossy().to_string(),
+                modified,
+            },
+        );
+    }
+    Ok(files)
+}
+
+fn local_model_id_from_repo(repo_id: &str, file_name: &str) -> String {
+    format!("{}-{}", repo_id, file_name)
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn display_name_from_repo(repo_id: &str) -> String {
+    repo_id
+        .split('/')
+        .next_back()
+        .unwrap_or(repo_id)
+        .trim_end_matches("-GGUF")
+        .trim_end_matches("-gguf")
+        .replace(['-', '_'], " ")
+}
+
+fn encode_huggingface_path(path: &str) -> String {
+    path.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
 }
 
 fn create_project_from_folder_inner(
@@ -279,6 +776,65 @@ mod tests {
 
         assert!(matches!(result, Err(AppError::InvalidFolder(_))));
         assert!(db.list_projects().unwrap().is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cached_huggingface_catalog_is_paginated_without_network() {
+        let root = unique_temp_dir("hf-catalog-page");
+        fs::create_dir_all(&root).unwrap();
+        let models = (0..25)
+            .map(|index| test_catalog_model(index))
+            .collect::<Vec<_>>();
+        save_huggingface_catalog_cache(&root, &models).unwrap();
+
+        let first_page = list_huggingface_vision_models_inner(
+            &root,
+            HuggingFaceCatalogRequest {
+                offset: 0,
+                limit: 20,
+                refresh: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first_page.models.len(), 20);
+        assert_eq!(first_page.total, 25);
+        assert_eq!(first_page.offset, 0);
+        assert!(first_page.has_more);
+        assert!(!first_page.refreshed);
+
+        let second_page = list_huggingface_vision_models_inner(
+            &root,
+            HuggingFaceCatalogRequest {
+                offset: 20,
+                limit: 20,
+                refresh: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(second_page.models.len(), 5);
+        assert!(!second_page.has_more);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn old_huggingface_catalog_cache_files_are_removed() {
+        let root = unique_temp_dir("hf-cache-cleanup");
+        let cache_dir = huggingface_catalog_cache_dir(&root);
+        fs::create_dir_all(&cache_dir).unwrap();
+        let today = cache_dir.join(format!("{}.json", today_cache_key()));
+        let stale = cache_dir.join("2024-01-01.json");
+        fs::write(&today, "[]").unwrap();
+        fs::write(&stale, "[]").unwrap();
+
+        cleanup_old_huggingface_catalog_caches(&root).unwrap();
+
+        assert!(today.exists());
+        assert!(!stale.exists());
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -676,5 +1232,26 @@ mod tests {
     fn write_solid_png(path: PathBuf, value: u8) {
         let image = RgbImage::from_pixel(8, 8, Rgb([value, value, value]));
         image.save(path).unwrap();
+    }
+
+    fn test_catalog_model(index: usize) -> HuggingFaceVisionModel {
+        HuggingFaceVisionModel {
+            id: format!("model-{index}"),
+            repo_id: format!("org/model-{index}"),
+            name: format!("Model {index}"),
+            author: "org".to_string(),
+            task: "image-text-to-text".to_string(),
+            license: "mit".to_string(),
+            file_name: format!("model-{index}.gguf"),
+            download_url: format!(
+                "https://huggingface.co/org/model-{index}/resolve/main/model-{index}.gguf"
+            ),
+            downloads: index as u64,
+            likes: 0,
+            last_modified: "unknown".to_string(),
+            downloaded: false,
+            update_available: false,
+            local_path: None,
+        }
     }
 }

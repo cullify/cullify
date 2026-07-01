@@ -20,6 +20,8 @@ pub enum AppError {
     TomlSer(#[from] toml::ser::Error),
     #[error("json serialize error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("http error: {0}")]
+    Http(#[from] reqwest::Error),
     #[error("zip error: {0}")]
     Zip(#[from] zip::result::ZipError),
     #[error("tauri runtime error: {0}")]
@@ -42,6 +44,8 @@ pub enum AppError {
     EmptyExport(String),
     #[error("source photo is missing: {0}")]
     SourcePhotoMissing(String),
+    #[error("invalid model download request: {0}")]
+    InvalidModelDownload(String),
 }
 
 impl From<AppError> for String {

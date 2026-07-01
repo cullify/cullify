@@ -8,7 +8,7 @@ export type Decision = 'keep' | 'cull' | 'auto' | null;
 
 export type FilterMode = 'all' | 'keep' | 'cull' | 'pending';
 
-export type ProviderId = 'builtin' | 'ollama' | 'openai';
+export type ProviderId = string;
 
 export interface Project {
   id: string;
