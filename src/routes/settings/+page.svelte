@@ -2,13 +2,17 @@
   import { onDestroy, onMount } from 'svelte';
   import {
     defaultAppConfig,
+    listenModelDownloadProgress,
+    tryCancelModelDownload,
     tryDownloadModel,
     tryListHuggingFaceVisionModels,
     tryLoadAppConfig,
     trySaveAppConfig,
     type AppConfig,
+    type DownloadModelSummary,
     type HuggingFaceVisionModel,
     type LocalModelConfig,
+    type ModelDownloadProgress,
     type ThirdPartyProviderConfig
   } from '$lib/backend';
   import { shortcuts as seedShortcuts } from '$lib/mockData';
@@ -35,7 +39,10 @@
   let isSavingConfig = $state(false);
   let configError = $state('');
   let downloadingModelId = $state('');
+  let cancelingModelId = $state('');
   let downloadMessage = $state('');
+  let downloadProgress = $state<Record<string, ModelDownloadProgress>>({});
+  let resumableDownloads = $state<Record<string, number>>({});
   let modelCatalog = $state<HuggingFaceVisionModel[]>([]);
   let modelCatalogStatus = $state<'ready' | 'fallback'>('fallback');
   let modelCatalogTotal = $state(0);
@@ -207,6 +214,60 @@
     return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
   }
 
+  function progressForModel(modelId: string) {
+    return downloadProgress[modelId] ?? null;
+  }
+
+  function progressButtonLabel(model: HuggingFaceVisionModel, progress: ModelDownloadProgress | null) {
+    if (downloadingModelId !== model.id) return modelActionLabel(model);
+    if (cancelingModelId === model.id) return '取消中';
+    return progress ? '取消下载' : '取消';
+  }
+
+  function progressDetail(progress: ModelDownloadProgress) {
+    if (progress.totalBytes) return `${formatBytes(progress.downloadedBytes)} / ${formatBytes(progress.totalBytes)}`;
+    return `${formatBytes(progress.downloadedBytes)} 已下载`;
+  }
+
+  function modelStatusText(model: HuggingFaceVisionModel, partialBytes: number) {
+    if (downloadingModelId === model.id) {
+      const progress = progressForModel(model.id);
+      return progress ? progressDetail(progress) : '准备下载';
+    }
+    if (model.downloaded && !model.updateAvailable) return '本地可用';
+    if (model.updateAvailable) return '可更新';
+    if (partialBytes > 0) return `可继续 · ${formatBytes(partialBytes)}`;
+    return `${formatCompactNumber(model.downloads)} downloads`;
+  }
+
+  function modelSourceText(model: HuggingFaceVisionModel) {
+    return `${model.repoId} · ${model.fileName}`;
+  }
+
+  function modelMetaText(model: HuggingFaceVisionModel) {
+    return [model.task, model.license, `${model.likes} likes`, formatModelDate(model.lastModified)]
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  function removeDownloadProgress(modelId: string) {
+    const nextProgress = { ...downloadProgress };
+    delete nextProgress[modelId];
+    downloadProgress = nextProgress;
+  }
+
+  function rememberResumableDownload(modelId: string) {
+    const bytes = progressForModel(modelId)?.downloadedBytes ?? 0;
+    if (bytes <= 0) return;
+    resumableDownloads = { ...resumableDownloads, [modelId]: bytes };
+  }
+
+  function forgetResumableDownload(modelId: string) {
+    const nextDownloads = { ...resumableDownloads };
+    delete nextDownloads[modelId];
+    resumableDownloads = nextDownloads;
+  }
+
   function selectedProviderSummary(provider: ThirdPartyProviderConfig) {
     if (!provider.enabled) return '已停用';
     if (!provider.model) return '未填写模型名';
@@ -251,19 +312,29 @@
       lastModified: 'unknown',
       downloaded: model.downloaded,
       updateAvailable: false,
-      localPath: model.localPath
+      localPath: model.localPath,
+      partialDownloadedBytes: 0,
+      partialPath: null
     };
   }
 
+  function resumableBytes(model: HuggingFaceVisionModel) {
+    if (model.downloaded && !model.updateAvailable) return 0;
+    return resumableDownloads[model.id] ?? model.partialDownloadedBytes ?? 0;
+  }
+
   function modelActionLabel(model: HuggingFaceVisionModel) {
-    if (downloadingModelId === model.id) return '下载中';
+    if (downloadingModelId === model.id) return cancelingModelId === model.id ? '取消中' : '取消下载';
     if (model.downloaded && model.updateAvailable) return '更新';
     if (model.downloaded) return '已下载';
+    if (resumableBytes(model) > 0) return '继续';
     return '下载';
   }
 
   function modelActionDisabled(model: HuggingFaceVisionModel) {
-    return downloadingModelId === model.id || (model.downloaded && !model.updateAvailable) || !validDownloadUrl(model.downloadUrl);
+    if (downloadingModelId === model.id) return cancelingModelId === model.id;
+    if (downloadingModelId) return true;
+    return (model.downloaded && !model.updateAvailable) || !validDownloadUrl(model.downloadUrl);
   }
 
   function formatCompactNumber(value: number) {
@@ -343,7 +414,57 @@
   }
 
   function canDownload(model: LocalModelConfig) {
-    return validDownloadUrl(model.downloadUrl) && Boolean(model.fileName.trim()) && downloadingModelId !== model.id;
+    return validDownloadUrl(model.downloadUrl) && Boolean(model.fileName.trim()) && !downloadingModelId;
+  }
+
+  async function cancelActiveModelDownload(modelId: string) {
+    if (downloadingModelId !== modelId || cancelingModelId) return;
+    cancelingModelId = modelId;
+    downloadMessage = '正在取消下载...';
+    shell.updateTask(`model-download-${modelId}`, {
+      detail: '正在取消下载',
+      progress: progressForModel(modelId)?.percent ?? null
+    });
+
+    const cancelled = await tryCancelModelDownload(modelId);
+    if (!cancelled) {
+      cancelingModelId = '';
+      downloadMessage = '取消失败，请稍后重试。';
+      shell.updateTask(`model-download-${modelId}`, {
+        detail: progressForModel(modelId) ? progressDetail(progressForModel(modelId)!) : '仍在下载',
+        progress: progressForModel(modelId)?.percent ?? null
+      });
+    }
+  }
+
+  async function withDownloadProgress(
+    taskId: string,
+    modelId: string,
+    initialBytes: number,
+    run: () => Promise<DownloadModelSummary | null>
+  ) {
+    downloadProgress = {
+      ...downloadProgress,
+      [modelId]: { modelId, downloadedBytes: initialBytes, totalBytes: null, percent: initialBytes ? null : 0 }
+    };
+
+    let unlisten = () => {};
+    try {
+      unlisten = await listenModelDownloadProgress((progress) => {
+        if (progress.modelId !== modelId) return;
+        downloadProgress = { ...downloadProgress, [modelId]: progress };
+        const detail = progressDetail(progress);
+        const percentText = progress.percent === null ? '' : `${progress.percent}% · `;
+        downloadMessage = `正在下载 ${percentText}${detail}`;
+        shell.updateTask(taskId, {
+          detail,
+          progress: progress.percent
+        });
+      });
+      return await run();
+    } finally {
+      unlisten();
+    }
   }
 
   function buildConfig(): AppConfig {
@@ -387,69 +508,101 @@
     }
     const taskId = `model-download-${model.id}`;
     downloadingModelId = model.id;
+    cancelingModelId = '';
     downloadMessage = `正在下载 ${model.name}...`;
     shell.startTask({
       id: taskId,
       label: '模型下载',
       detail: model.name,
-      progress: null
+      progress: 0
     });
-    const summary = await tryDownloadModel({
-      modelId: model.id,
-      fileName: model.fileName,
-      downloadUrl: model.downloadUrl
-    });
-    if (summary) {
-      localModels = localModels.map((item) =>
-        item.id === model.id ? { ...item, downloaded: true, localPath: summary.path } : item
+    try {
+      const summary = await withDownloadProgress(taskId, model.id, 0, () =>
+        tryDownloadModel({
+          modelId: model.id,
+          fileName: model.fileName,
+          downloadUrl: model.downloadUrl
+        })
       );
-      activeProvider = 'llama.cpp';
-      activeLocalModelId = model.id;
-      downloadMessage = `已下载 ${formatBytes(summary.bytes)} 到 ${summary.path}`;
-      markDirty(`下载模型 → ${model.name}`);
-      shell.finishTask(taskId, '下载完成');
-    } else {
-      downloadMessage = '下载失败，请确认地址可访问、磁盘空间充足，并查看终端日志。';
-      shell.failTask(taskId, '下载失败');
+      if (summary) {
+        localModels = localModels.map((item) =>
+          item.id === model.id ? { ...item, downloaded: true, localPath: summary.path } : item
+        );
+        activeProvider = 'llama.cpp';
+        activeLocalModelId = model.id;
+        downloadMessage = `已下载 ${formatBytes(summary.bytes)} 到 ${summary.path}`;
+        forgetResumableDownload(model.id);
+        markDirty(`下载模型 → ${model.name}`);
+        shell.finishTask(taskId, '下载完成');
+      } else if (cancelingModelId === model.id) {
+        rememberResumableDownload(model.id);
+        downloadMessage = `已取消 ${model.name} 下载`;
+        shell.cancelTask(taskId, '已取消');
+      } else {
+        rememberResumableDownload(model.id);
+        downloadMessage = '下载失败，请确认地址可访问、磁盘空间充足，并查看终端日志。';
+        shell.failTask(taskId, '下载失败');
+      }
+    } finally {
+      removeDownloadProgress(model.id);
+      downloadingModelId = '';
+      cancelingModelId = '';
     }
-    downloadingModelId = '';
   }
 
   async function downloadCatalogModel(model: HuggingFaceVisionModel) {
+    if (downloadingModelId && downloadingModelId !== model.id) return;
     if (modelActionDisabled(model) && !(model.downloaded && model.updateAvailable)) return;
     const taskId = `model-download-${model.id}`;
+    const partialBytes = resumableBytes(model);
     downloadingModelId = model.id;
-    downloadMessage = `${model.updateAvailable ? '正在更新' : '正在下载'} ${model.name}...`;
+    cancelingModelId = '';
+    downloadMessage = `${partialBytes ? '正在继续下载' : model.updateAvailable ? '正在更新' : '正在下载'} ${model.name}...`;
     shell.startTask({
       id: taskId,
       label: model.updateAvailable ? '模型更新' : '模型下载',
       detail: model.name,
-      progress: null
+      progress: 0
     });
-    const summary = await tryDownloadModel({
-      modelId: model.id,
-      fileName: model.fileName,
-      downloadUrl: model.downloadUrl
-    });
-    if (summary) {
-      const downloadedModel = {
-        ...model,
-        downloaded: true,
-        updateAvailable: false,
-        localPath: summary.path
-      };
-      modelCatalog = modelCatalog.map((item) => (item.id === model.id ? downloadedModel : item));
-      localModels = upsertLocalModelFromCatalog(downloadedModel, summary.path);
-      activeProvider = 'llama.cpp';
-      activeLocalModelId = model.id;
-      downloadMessage = `已${model.updateAvailable ? '更新' : '下载'} ${formatBytes(summary.bytes)} 到 ${summary.path}`;
-      markDirty(`${model.updateAvailable ? '更新' : '下载'}模型 → ${model.name}`);
-      shell.finishTask(taskId, model.updateAvailable ? '更新完成' : '下载完成');
-    } else {
-      downloadMessage = '下载失败，请确认 Hugging Face 可访问、磁盘空间充足，并查看终端日志。';
-      shell.failTask(taskId, '下载失败');
+    try {
+      const summary = await withDownloadProgress(taskId, model.id, partialBytes, () =>
+        tryDownloadModel({
+          modelId: model.id,
+          fileName: model.fileName,
+          downloadUrl: model.downloadUrl
+        })
+      );
+      if (summary) {
+        const downloadedModel = {
+          ...model,
+          downloaded: true,
+          updateAvailable: false,
+          localPath: summary.path,
+          partialDownloadedBytes: 0,
+          partialPath: null
+        };
+        modelCatalog = modelCatalog.map((item) => (item.id === model.id ? downloadedModel : item));
+        localModels = upsertLocalModelFromCatalog(downloadedModel, summary.path);
+        activeProvider = 'llama.cpp';
+        activeLocalModelId = model.id;
+        downloadMessage = `已${model.updateAvailable ? '更新' : '下载'} ${formatBytes(summary.bytes)} 到 ${summary.path}`;
+        forgetResumableDownload(model.id);
+        markDirty(`${model.updateAvailable ? '更新' : '下载'}模型 → ${model.name}`);
+        shell.finishTask(taskId, model.updateAvailable ? '更新完成' : '下载完成');
+      } else if (cancelingModelId === model.id) {
+        rememberResumableDownload(model.id);
+        downloadMessage = `已取消 ${model.name} 下载`;
+        shell.cancelTask(taskId, '已取消');
+      } else {
+        rememberResumableDownload(model.id);
+        downloadMessage = '下载失败，请确认 Hugging Face 可访问、磁盘空间充足，并查看终端日志。';
+        shell.failTask(taskId, '下载失败');
+      }
+    } finally {
+      removeDownloadProgress(model.id);
+      downloadingModelId = '';
+      cancelingModelId = '';
     }
-    downloadingModelId = '';
   }
 
   function upsertLocalModelFromCatalog(model: HuggingFaceVisionModel, localPath: string) {
@@ -604,7 +757,6 @@
           <h2>模型供应商</h2>
           <span>{activeProvider} / {activeModelId}</span>
         </div>
-        <p class="section-copy">统一管理本地模型和第三方 OpenAI-compatible provider。左侧选择供应商，右侧只展示当前供应商需要维护的凭据与模型。</p>
 
         <div class="provider-workspace">
           <aside class="provider-directory" aria-label="模型供应商列表">
@@ -701,24 +853,31 @@
             </div>
 
             {#if activeProvider === 'llama.cpp'}
-              <div class="provider-fields single">
-                <label>
-                  <span>模型目录</span>
-                  <input value={`${appDataDir}/models`} readonly />
-                </label>
-                <p>本地模型由 llama.cpp 驱动；目录中的 .gguf 文件会自动识别。下方模型列表由 Hugging Face 提供下载来源。</p>
+              <div class="local-model-summary">
+                <div>
+                  <span>保存位置</span>
+                  <strong>{`${appDataDir}/models`}</strong>
+                </div>
+                <div>
+                  <span>下载来源</span>
+                  <strong>Hugging Face</strong>
+                </div>
+                <div>
+                  <span>任务状态</span>
+                  <strong>{downloadingModelId ? '下载中' : '空闲'}</strong>
+                </div>
               </div>
 
               <div id="models" class="model-library">
                 <div class="model-library-title">
-                  <h4>Models</h4>
+                  <h4>模型库</h4>
                   <span>
                     {#if isCatalogRefreshing && !modelCatalog.length}
-                      正在读取 Hugging Face
+                      读取中
                     {:else if modelCatalogStatus === 'fallback'}
                       本地列表
                     {:else}
-                      Hugging Face · {visibleCatalogModels.length} / {modelCatalogTotal} · 缓存 {modelCatalogCacheDate}
+                      {visibleCatalogModels.length} / {modelCatalogTotal} · {modelCatalogCacheDate}
                     {/if}
                   </span>
                 </div>
@@ -730,35 +889,40 @@
                   </button>
                 </div>
 
-                <div class="hf-model-table" role="table" aria-label="Hugging Face 视觉模型">
-                  <div class="hf-model-head" role="row">
-                    <span>模型</span>
-                    <span>任务</span>
-                    <span>热度</span>
-                    <span>更新</span>
-                    <span>操作</span>
-                  </div>
+                <div class="hf-model-table" role="list" aria-label="Hugging Face 视觉模型">
                   {#each visibleCatalogModels as model (model.id)}
-                    <div class={['hf-model-row', model.id === activeLocalModelId && 'active'].filter(Boolean).join(' ')} role="row">
+                    {@const progress = progressForModel(model.id)}
+                    {@const partialBytes = resumableBytes(model)}
+                    <div class={['hf-model-row', model.id === activeLocalModelId && 'active'].filter(Boolean).join(' ')} role="listitem">
                       <div class="hf-model-name">
                         <span class="model-icon">{model.name.slice(0, 1)}</span>
-                        <span>
+                        <span class="hf-model-copy">
                           <strong>{model.name}</strong>
-                          <small>{model.repoId} · {model.fileName}</small>
+                          <small>{modelSourceText(model)}</small>
+                          <em>{modelMetaText(model)}</em>
                         </span>
                       </div>
-                      <span class="hf-model-meta"><b>任务</b>{model.task}<small>{model.license}</small></span>
-                      <span class="hf-model-meta"><b>热度</b>{formatCompactNumber(model.downloads)}<small>{model.likes} likes</small></span>
-                      <span class="hf-model-meta"><b>更新</b>{formatModelDate(model.lastModified)}<small>{model.updateAvailable ? '有新版本' : model.downloaded ? '本地最新' : model.author}</small></span>
                       <span class="hf-model-action">
+                        <small>{modelStatusText(model, partialBytes)}</small>
                         <button
                           type="button"
-                          class={['model-action', model.downloaded && !model.updateAvailable && 'done', model.updateAvailable && 'update'].filter(Boolean).join(' ')}
+                          class={[
+                            'model-action',
+                            model.downloaded && !model.updateAvailable && 'done',
+                            model.updateAvailable && 'update',
+                            downloadingModelId === model.id && 'cancel'
+                          ].filter(Boolean).join(' ')}
                           disabled={modelActionDisabled(model)}
-                          onclick={() => void downloadCatalogModel(model)}
+                          onclick={() =>
+                            void (downloadingModelId === model.id ? cancelActiveModelDownload(model.id) : downloadCatalogModel(model))}
                         >
-                          {modelActionLabel(model)}
+                          {progressButtonLabel(model, progress)}
                         </button>
+                        {#if progress}
+                          <span class="download-progress-track" aria-label="下载进度">
+                            <span style={`width: ${progress.percent ?? 0}%`}></span>
+                          </span>
+                        {/if}
                       </span>
                     </div>
                   {:else}
@@ -777,9 +941,9 @@
                 {/if}
               </div>
             {:else if activeProviderConfig}
-              <div class="provider-fields">
+              <div class="provider-fields remote-provider-fields">
                 <label>
-                  <span>Provider ID</span>
+                  <span>供应商 ID</span>
                   <input value={activeProviderConfig.id} readonly />
                 </label>
                 <label>
@@ -787,7 +951,7 @@
                   <input value="@ai-sdk/openai-compatible" readonly />
                 </label>
                 <label>
-                  <span>显示名称</span>
+                  <span>名称</span>
                   <input value={activeProviderConfig.name} oninput={(event) => updateProvider(activeProviderConfig.id, 'name', event.currentTarget.value)} />
                 </label>
                 <label>
@@ -806,22 +970,16 @@
 
               <div id="models" class="remote-models">
                 <div class="model-library-title">
-                  <h4>Models</h4>
-                  <span>当前选中</span>
+                  <h4>默认模型</h4>
+                  <span>{activeProviderConfig.enabled ? '启用' : '停用'}</span>
                 </div>
-                <div class="model-group">
-                  <button type="button" class="model-group-head">
-                    <span>⌄</span>
-                    <strong>{activeProviderConfig.name || activeProviderConfig.id}</strong>
-                  </button>
-                  <div class="remote-model-row">
-                    <span class="model-icon">{(activeProviderConfig.model || '?').slice(0, 1).toUpperCase()}</span>
-                    <div>
-                      <strong>{activeProviderConfig.model || '尚未填写模型 ID'}</strong>
-                      <small>{activeProviderConfig.baseUrl || '尚未配置 API Host'}</small>
-                    </div>
-                    <button type="button" class="model-action" onclick={() => selectProvider(activeProviderConfig.id)}>使用</button>
+                <div class="remote-model-row">
+                  <span class="model-icon">{(activeProviderConfig.model || '?').slice(0, 1).toUpperCase()}</span>
+                  <div>
+                    <strong>{activeProviderConfig.model || '尚未填写模型 ID'}</strong>
+                    <small>{activeProviderConfig.baseUrl || '尚未配置 API Host'}</small>
                   </div>
+                  <button type="button" class="model-action" onclick={() => selectProvider(activeProviderConfig.id)}>使用</button>
                 </div>
               </div>
             {:else}
@@ -1040,7 +1198,7 @@
 
   .provider-workspace {
     display: grid;
-    grid-template-columns: 320px minmax(0, 1fr);
+    grid-template-columns: 300px minmax(0, 1fr);
     min-height: 560px;
     overflow: hidden;
     border: 1px solid #e7e7e2;
@@ -1231,10 +1389,10 @@
   .provider-panel {
     display: grid;
     align-content: start;
-    gap: 22px;
+    gap: 18px;
     min-width: 0;
     background: #fff;
-    padding: 24px 28px 30px;
+    padding: 22px 26px 28px;
   }
 
   .provider-panel-head {
@@ -1267,15 +1425,50 @@
     gap: 14px 16px;
   }
 
+  .remote-provider-fields {
+    border: 1px solid #efeee9;
+    border-radius: 8px;
+    background: #fcfcfb;
+    padding: 16px;
+  }
+
   .provider-fields.single {
     grid-template-columns: 1fr;
     gap: 8px;
   }
 
-  .provider-fields.single p {
-    margin: 0;
-    color: #8b8a84;
+  .local-model-summary {
+    display: grid;
+    grid-template-columns: 1.45fr 0.8fr 0.65fr;
+    gap: 1px;
+    overflow: hidden;
+    border: 1px solid #ecece8;
+    border-radius: 8px;
+    background: #ecece8;
+  }
+
+  .local-model-summary div {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+    background: #fbfbfa;
+    padding: 12px 14px;
+  }
+
+  .local-model-summary span {
+    color: var(--meta);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+  }
+
+  .local-model-summary strong {
+    overflow: hidden;
+    color: var(--fg-2);
     font-size: 12px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   input[readonly] {
@@ -1305,7 +1498,7 @@
   .model-catalog-toolbar {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px;
+    gap: 8px;
   }
 
   .model-catalog-toolbar input {
@@ -1316,47 +1509,30 @@
   }
 
   .hf-model-table {
-    overflow: hidden;
+    display: grid;
+    gap: 8px;
+  }
+
+  .hf-model-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 140px;
+    align-items: center;
+    gap: 18px;
+    min-height: 82px;
     border: 1px solid #ecece8;
     border-radius: 8px;
     background: #fff;
-  }
-
-  .hf-model-head,
-  .hf-model-row {
-    display: grid;
-    grid-template-columns: minmax(150px, 1fr) 74px 54px 64px 62px;
-    align-items: center;
-    gap: 8px;
-    padding: 0 10px;
-  }
-
-  .hf-model-head {
-    min-height: 42px;
-    border-bottom: 1px solid #ecece8;
-    background: #f6f6f4;
-    color: #7c7971;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-transform: uppercase;
-  }
-
-  .hf-model-row {
-    min-height: 70px;
-    border-bottom: 1px solid #f1f0ed;
-  }
-
-  .hf-model-row:last-child {
-    border-bottom: 0;
+    padding: 12px 14px;
   }
 
   .hf-model-row:hover,
   .hf-model-row.active {
-    background: #fbfcff;
+    border-color: #d9eadf;
+    background: #fcfffd;
   }
 
   .hf-model-row.active {
-    box-shadow: inset 3px 0 0 #10b981;
+    box-shadow: inset 3px 0 0 #10b981, 0 8px 18px rgba(20, 20, 19, 0.045);
   }
 
   .hf-model-name {
@@ -1377,7 +1553,12 @@
     white-space: nowrap;
   }
 
+  .hf-model-copy {
+    min-width: 0;
+  }
+
   .hf-model-name small,
+  .hf-model-copy em,
   .hf-model-meta small {
     display: block;
     overflow: hidden;
@@ -1386,6 +1567,12 @@
     font-size: 10px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .hf-model-copy em {
+    margin-top: 3px;
+    color: #a09d96;
+    font-style: normal;
   }
 
   .hf-model-meta {
@@ -1398,12 +1585,39 @@
     white-space: nowrap;
   }
 
-  .hf-model-meta b {
-    display: none;
+  .hf-model-action {
+    display: grid;
+    justify-items: end;
+    gap: 7px;
+    min-width: 0;
   }
 
-  .hf-model-action {
-    justify-self: end;
+  .hf-model-action small {
+    max-width: 140px;
+    overflow: hidden;
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.2;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .download-progress-track {
+    width: 100%;
+    height: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #ebe8df;
+  }
+
+  .download-progress-track span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: #16b978;
+    transition: width 160ms ease;
   }
 
   .hf-model-empty {
@@ -1428,7 +1642,6 @@
   }
 
   .model-group {
-    overflow: hidden;
     border: 1px solid #ecece8;
     border-radius: 8px;
     background: #fff;
@@ -1465,15 +1678,11 @@
     gap: 12px;
     width: 100%;
     min-height: 68px;
-    border-bottom: 1px solid #f1f0ed;
+    border: 1px solid #ecece8;
+    border-radius: 8px;
     background: #fff;
     padding: 12px 18px;
     text-align: left;
-  }
-
-  .model-row-button:last-child,
-  .remote-model-row:last-child {
-    border-bottom: 0;
   }
 
   .model-row-button:hover,
@@ -1553,6 +1762,12 @@
     border-color: #f0d292;
     background: #fff7df;
     color: #8a5a00;
+  }
+
+  .model-action.cancel {
+    border-color: #f1b8b0;
+    background: #fff1ef;
+    color: var(--danger);
   }
 
   .download-message {
@@ -1801,6 +2016,10 @@
       grid-template-columns: 1fr;
     }
 
+    .local-model-summary {
+      grid-template-columns: 1fr;
+    }
+
     .form-row {
       grid-template-columns: 1fr;
       align-items: start;
@@ -1825,10 +2044,6 @@
       justify-self: start;
     }
 
-    .hf-model-head {
-      display: none;
-    }
-
     .hf-model-row {
       grid-template-columns: 1fr;
       align-items: start;
@@ -1837,20 +2052,16 @@
     }
 
     .hf-model-action {
-      justify-self: start;
+      justify-items: start;
+      width: 100%;
+    }
+
+    .hf-model-action small {
+      text-align: left;
     }
 
     .hf-model-meta {
       white-space: normal;
-    }
-
-    .hf-model-meta b {
-      display: block;
-      color: #9a978f;
-      font-family: var(--font-mono);
-      font-size: 9px;
-      font-weight: 500;
-      text-transform: uppercase;
     }
 
     .model-catalog-toolbar {

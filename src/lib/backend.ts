@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import type { Photo, Project, ProjectStatus } from './types';
@@ -136,6 +137,13 @@ export interface DownloadModelSummary {
   bytes: number;
 }
 
+export interface ModelDownloadProgress {
+  modelId: string;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percent: number | null;
+}
+
 export interface HuggingFaceVisionModel {
   id: string;
   repoId: string;
@@ -151,6 +159,8 @@ export interface HuggingFaceVisionModel {
   downloaded: boolean;
   updateAvailable: boolean;
   localPath: string | null;
+  partialDownloadedBytes: number;
+  partialPath: string | null;
 }
 
 export interface HuggingFaceCatalogRequest {
@@ -297,6 +307,15 @@ export function downloadModel(request: DownloadModelRequest) {
   return invoke<DownloadModelSummary>('download_model', { request });
 }
 
+export function cancelModelDownload(modelId: string) {
+  return invoke<void>('cancel_model_download', { modelId });
+}
+
+export function listenModelDownloadProgress(handler: (progress: ModelDownloadProgress) => void) {
+  if (!hasTauriRuntime()) return Promise.resolve(() => {});
+  return listen<ModelDownloadProgress>('model-download-progress', (event) => handler(event.payload));
+}
+
 export function listHuggingFaceVisionModels(request: HuggingFaceCatalogRequest) {
   return invoke<HuggingFaceCatalogPage>('list_huggingface_vision_models', { request });
 }
@@ -392,6 +411,16 @@ export async function tryDownloadModel(request: DownloadModelRequest) {
   } catch (error) {
     console.info('Unable to download Cullify model.', error);
     return null;
+  }
+}
+
+export async function tryCancelModelDownload(modelId: string) {
+  try {
+    await cancelModelDownload(modelId);
+    return true;
+  } catch (error) {
+    console.info('Unable to cancel Cullify model download.', error);
+    return false;
   }
 }
 

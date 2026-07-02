@@ -67,6 +67,7 @@
   async function startTitlebarDrag(event: PointerEvent) {
     if (event.button !== 0 || isInteractiveTarget(event.target)) return;
     if (!('__TAURI_INTERNALS__' in window)) return;
+    if (isMacTrafficLightArea(event)) return;
     event.preventDefault();
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -74,6 +75,10 @@
     } catch (error) {
       console.info('Unable to start Cullify window dragging.', error);
     }
+  }
+
+  function isMacTrafficLightArea(event: PointerEvent) {
+    return platformClass === 'platform-mac' && runtimeClass === 'tauri-runtime' && event.clientX < 76 && event.clientY < 36;
   }
 
   function isInteractiveTarget(target: EventTarget | null) {
@@ -129,7 +134,6 @@
 >
   <header
     class="titlebar"
-    data-tauri-drag-region
     role="presentation"
     onpointerdown={startTitlebarDrag}
   >
@@ -147,9 +151,9 @@
         <span></span>
       </span>
     </button>
-    <div class="titlebar-copy" data-tauri-drag-region>
-      <strong data-tauri-drag-region>{shell.title}</strong>
-      <span data-tauri-drag-region>{shell.subtitle}</span>
+    <div class="titlebar-copy">
+      <strong>{shell.title}</strong>
+      <span>{shell.subtitle}</span>
     </div>
   </header>
 

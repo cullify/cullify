@@ -91,22 +91,12 @@ a {
   background: color-mix(in srgb, var(--surface) 94%, var(--bg));
   padding: 0 138px 0 12px;
   user-select: none;
-  -webkit-app-region: drag;
+  -webkit-app-region: no-drag;
 }
 
 .platform-mac .titlebar {
   padding-left: 82px;
   padding-right: 16px;
-}
-
-.tauri-runtime.platform-mac {
-  grid-template-rows: 70px minmax(0, 1fr) 32px;
-}
-
-.tauri-runtime.platform-mac .titlebar {
-  align-items: end;
-  padding-bottom: 6px;
-  padding-top: 34px;
 }
 
 .platform-windows .titlebar {

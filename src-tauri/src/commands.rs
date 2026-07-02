@@ -1,15 +1,21 @@
 use std::{
-    collections::HashMap,
-    fs, io,
+    collections::{HashMap, HashSet},
+    fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread,
+    time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Utc};
+use reqwest::{
+    StatusCode,
+    header::{CONTENT_RANGE, RANGE},
+};
 use serde::{Deserialize, Serialize};
 use sysinfo::{ProcessesToUpdate, System};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::{
     config::{AppConfig, AppConfigEnvelope},
@@ -20,9 +26,13 @@ use crate::{
     scanner::{folder_name, generate_thumbnails, scan_folder_with_config},
 };
 
+const MODEL_DOWNLOAD_PROGRESS_EVENT: &str = "model-download-progress";
+
 pub struct AppState {
     pub db: Arc<Database>,
     pub app_data_dir: PathBuf,
+    download_cancellations: Arc<Mutex<HashSet<String>>>,
+    active_downloads: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -31,7 +41,17 @@ impl AppState {
         Ok(Self {
             db: Arc::new(Database::open(app_data_dir.join("cullify.db"))?),
             app_data_dir,
+            download_cancellations: Arc::new(Mutex::new(HashSet::new())),
+            active_downloads: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+
+    fn download_cancellations(&self) -> Arc<Mutex<HashSet<String>>> {
+        Arc::clone(&self.download_cancellations)
+    }
+
+    fn active_downloads(&self) -> Arc<Mutex<HashSet<String>>> {
+        Arc::clone(&self.active_downloads)
     }
 }
 
@@ -186,12 +206,60 @@ pub struct DownloadModelSummary {
     pub bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDownloadProgress {
+    pub model_id: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percent: Option<u8>,
+}
+
 #[tauri::command]
-pub fn download_model(
+pub async fn download_model(
     request: DownloadModelRequest,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<DownloadModelSummary, String> {
-    download_model_inner(request, &state.app_data_dir).map_err(Into::into)
+    let app_data_dir = state.app_data_dir.clone();
+    let model_id = request.model_id.trim().to_string();
+    if model_id.is_empty() {
+        return Err("model id cannot be empty".to_string());
+    }
+    let cancellations = state.download_cancellations();
+    let active_downloads = state.active_downloads();
+    mark_model_download_active(&active_downloads, &cancellations, &model_id)
+        .map_err(String::from)?;
+    let cleanup_model_id = model_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = download_model_inner(request, &app_data_dir, &app, Arc::clone(&cancellations));
+        let _ = clear_model_download_state(&active_downloads, &cancellations, &cleanup_model_id);
+        result
+    })
+    .await
+    .map_err(|error| format!("model download task failed: {error}"))?
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn cancel_model_download(model_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return Err("model id cannot be empty".to_string());
+    }
+    let mut cancellations = state
+        .download_cancellations
+        .lock()
+        .map_err(|_| "model download cancellation state is unavailable".to_string())?;
+    let active_downloads = state
+        .active_downloads
+        .lock()
+        .map_err(|_| "model download state is unavailable".to_string())?;
+    if !active_downloads.contains(model_id) {
+        return Err(format!("no active model download: {model_id}"));
+    }
+    cancellations.insert(model_id.to_string());
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +279,10 @@ pub struct HuggingFaceVisionModel {
     pub downloaded: bool,
     pub update_available: bool,
     pub local_path: Option<String>,
+    #[serde(default)]
+    pub partial_downloaded_bytes: u64,
+    #[serde(default)]
+    pub partial_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -286,8 +358,11 @@ pub fn export_project(
 fn download_model_inner(
     request: DownloadModelRequest,
     app_data_dir: &Path,
+    app: &tauri::AppHandle,
+    cancellations: Arc<Mutex<HashSet<String>>>,
 ) -> AppResult<DownloadModelSummary> {
-    if request.model_id.trim().is_empty() {
+    let model_id = request.model_id.trim().to_string();
+    if model_id.is_empty() {
         return Err(AppError::InvalidModelDownload(
             "model id cannot be empty".to_string(),
         ));
@@ -310,22 +385,201 @@ fn download_model_inner(
     let target_path = models_dir.join(file_name);
     let temp_path = models_dir.join(format!("{file_name}.download"));
 
-    let mut response = reqwest::blocking::Client::builder()
+    let client = reqwest::blocking::Client::builder()
         .user_agent("Cullify/0.1 model downloader")
-        .build()?
-        .get(download_url)
-        .send()?
-        .error_for_status()?;
+        .build()?;
+    let resume_from = partial_download_size(&temp_path)?;
+    let mut response = send_model_download_request(&client, download_url, resume_from)?;
+    let mut bytes = resume_from;
+    let mut append_to_partial = false;
 
-    let mut output = fs::File::create(&temp_path)?;
-    let bytes = io::copy(&mut response, &mut output)?;
+    match response.status() {
+        StatusCode::PARTIAL_CONTENT if resume_from > 0 => {
+            append_to_partial = true;
+        }
+        StatusCode::OK => {
+            bytes = 0;
+        }
+        StatusCode::RANGE_NOT_SATISFIABLE if resume_from > 0 => {
+            let _ = fs::remove_file(&temp_path);
+            bytes = 0;
+            response = send_model_download_request(&client, download_url, 0)?;
+        }
+        _ => {}
+    }
+
+    let mut response = response.error_for_status()?;
+    let total_bytes = if append_to_partial {
+        response
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(parse_content_range_total)
+            .or_else(|| response.content_length().map(|remaining| remaining + bytes))
+    } else {
+        response.content_length()
+    };
+
+    let mut output = if append_to_partial {
+        fs::OpenOptions::new().append(true).open(&temp_path)?
+    } else {
+        fs::File::create(&temp_path)?
+    };
+
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    let mut last_progress_emit = Instant::now();
+
+    emit_model_download_progress(app, &model_id, bytes, total_bytes);
+    loop {
+        if is_model_download_cancelled(&cancellations, &model_id)? {
+            output.flush()?;
+            clear_model_download_cancellation(&cancellations, &model_id)?;
+            return Err(AppError::ModelDownloadCancelled(model_id));
+        }
+
+        let read = response.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read])?;
+        bytes += read as u64;
+
+        let is_complete = total_bytes
+            .map(|total| total > 0 && bytes >= total)
+            .unwrap_or(false);
+        if is_complete || last_progress_emit.elapsed() >= Duration::from_millis(250) {
+            emit_model_download_progress(app, &model_id, bytes, total_bytes);
+            last_progress_emit = Instant::now();
+        }
+    }
+    output.flush()?;
+    if is_model_download_cancelled(&cancellations, &model_id)? {
+        clear_model_download_cancellation(&cancellations, &model_id)?;
+        return Err(AppError::ModelDownloadCancelled(model_id));
+    }
+    emit_model_download_progress(app, &model_id, bytes, total_bytes);
     fs::rename(&temp_path, &target_path)?;
 
     Ok(DownloadModelSummary {
-        model_id: request.model_id,
+        model_id,
         path: target_path.to_string_lossy().to_string(),
         bytes,
     })
+}
+
+fn send_model_download_request(
+    client: &reqwest::blocking::Client,
+    download_url: &str,
+    resume_from: u64,
+) -> Result<reqwest::blocking::Response, reqwest::Error> {
+    let request = client.get(download_url);
+    if resume_from > 0 {
+        request
+            .header(RANGE, format!("bytes={resume_from}-"))
+            .send()
+    } else {
+        request.send()
+    }
+}
+
+fn partial_download_size(temp_path: &Path) -> AppResult<u64> {
+    match fs::metadata(temp_path) {
+        Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
+        Ok(_) => Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn parse_content_range_total(value: &reqwest::header::HeaderValue) -> Option<u64> {
+    let value = value.to_str().ok()?;
+    let (_, total) = value.rsplit_once('/')?;
+    if total == "*" {
+        return None;
+    }
+    total.parse::<u64>().ok()
+}
+
+fn is_model_download_cancelled(
+    cancellations: &Arc<Mutex<HashSet<String>>>,
+    model_id: &str,
+) -> AppResult<bool> {
+    let cancellations = cancellations.lock().map_err(|_| {
+        AppError::InvalidModelDownload(
+            "model download cancellation state is unavailable".to_string(),
+        )
+    })?;
+    Ok(cancellations.contains(model_id))
+}
+
+fn mark_model_download_active(
+    active_downloads: &Arc<Mutex<HashSet<String>>>,
+    cancellations: &Arc<Mutex<HashSet<String>>>,
+    model_id: &str,
+) -> AppResult<()> {
+    let mut cancellations = cancellations.lock().map_err(|_| {
+        AppError::InvalidModelDownload(
+            "model download cancellation state is unavailable".to_string(),
+        )
+    })?;
+    cancellations.remove(model_id);
+
+    let mut active_downloads = active_downloads.lock().map_err(|_| {
+        AppError::InvalidModelDownload("model download state is unavailable".to_string())
+    })?;
+    if active_downloads.contains(model_id) {
+        return Err(AppError::InvalidModelDownload(format!(
+            "model download already active: {model_id}"
+        )));
+    }
+    active_downloads.insert(model_id.to_string());
+    Ok(())
+}
+
+fn clear_model_download_cancellation(
+    cancellations: &Arc<Mutex<HashSet<String>>>,
+    model_id: &str,
+) -> AppResult<()> {
+    let mut cancellations = cancellations.lock().map_err(|_| {
+        AppError::InvalidModelDownload(
+            "model download cancellation state is unavailable".to_string(),
+        )
+    })?;
+    cancellations.remove(model_id);
+    Ok(())
+}
+
+fn clear_model_download_state(
+    active_downloads: &Arc<Mutex<HashSet<String>>>,
+    cancellations: &Arc<Mutex<HashSet<String>>>,
+    model_id: &str,
+) -> AppResult<()> {
+    clear_model_download_cancellation(cancellations, model_id)?;
+    let mut active_downloads = active_downloads.lock().map_err(|_| {
+        AppError::InvalidModelDownload("model download state is unavailable".to_string())
+    })?;
+    active_downloads.remove(model_id);
+    Ok(())
+}
+
+fn emit_model_download_progress(
+    app: &tauri::AppHandle,
+    model_id: &str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+) {
+    let percent = total_bytes
+        .filter(|total| *total > 0)
+        .map(|total| ((downloaded_bytes.saturating_mul(100) / total).min(100)) as u8);
+
+    let _ = app.emit(
+        MODEL_DOWNLOAD_PROGRESS_EVENT,
+        ModelDownloadProgress {
+            model_id: model_id.to_string(),
+            downloaded_bytes,
+            total_bytes,
+            percent,
+        },
+    );
 }
 
 fn list_huggingface_vision_models_inner(
@@ -463,6 +717,8 @@ fn catalog_model_from_response(model: HuggingFaceModelResponse) -> Option<Huggin
         downloaded: false,
         update_available: false,
         local_path: None,
+        partial_downloaded_bytes: 0,
+        partial_path: None,
     })
 }
 
@@ -471,13 +727,17 @@ fn overlay_local_model_status(
     app_data_dir: &Path,
 ) -> AppResult<()> {
     let local_files = local_model_file_index(&app_data_dir.join("models"))?;
+    let partial_files = partial_model_file_index(&app_data_dir.join("models"))?;
     for model in models {
         let local = local_files.get(&model.file_name.to_lowercase());
+        let partial = partial_files.get(&model.file_name.to_lowercase());
         let remote_modified = DateTime::parse_from_rfc3339(&model.last_modified)
             .ok()
             .map(|value| value.with_timezone(&Utc));
         model.downloaded = local.is_some();
         model.local_path = local.map(|file| file.path.clone());
+        model.partial_downloaded_bytes = partial.map(|file| file.bytes).unwrap_or(0);
+        model.partial_path = partial.map(|file| file.path.clone());
         model.update_available = match (local, remote_modified) {
             (Some(local), Some(remote)) => local.modified < remote,
             _ => false,
@@ -585,6 +845,12 @@ struct LocalModelFile {
     modified: DateTime<Utc>,
 }
 
+#[derive(Debug)]
+struct PartialModelFile {
+    path: String,
+    bytes: u64,
+}
+
 fn local_model_file_index(models_dir: &Path) -> AppResult<HashMap<String, LocalModelFile>> {
     let mut files = HashMap::new();
     if !models_dir.exists() {
@@ -609,6 +875,38 @@ fn local_model_file_index(models_dir: &Path) -> AppResult<HashMap<String, LocalM
             LocalModelFile {
                 path: path.to_string_lossy().to_string(),
                 modified,
+            },
+        );
+    }
+    Ok(files)
+}
+
+fn partial_model_file_index(models_dir: &Path) -> AppResult<HashMap<String, PartialModelFile>> {
+    let mut files = HashMap::new();
+    if !models_dir.exists() {
+        return Ok(files);
+    }
+    for entry in fs::read_dir(models_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(model_file_name) = file_name.strip_suffix(".download") else {
+            continue;
+        };
+        if !model_file_name.to_lowercase().ends_with(".gguf") {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            continue;
+        }
+        files.insert(
+            model_file_name.to_lowercase(),
+            PartialModelFile {
+                path: path.to_string_lossy().to_string(),
+                bytes: metadata.len(),
             },
         );
     }
@@ -1252,6 +1550,8 @@ mod tests {
             downloaded: false,
             update_available: false,
             local_path: None,
+            partial_downloaded_bytes: 0,
+            partial_path: None,
         }
     }
 }

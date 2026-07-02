@@ -11,10 +11,10 @@ mod scanner;
 use std::path::PathBuf;
 
 use commands::{
-    AppState, create_project_from_folder, delete_project, download_model, export_project,
-    list_huggingface_vision_models, list_photos, list_projects, load_app_config, rename_project,
-    save_app_config, set_photo_decision, set_photo_decisions, start_huggingface_catalog_refresh,
-    system_resource_snapshot,
+    AppState, cancel_model_download, create_project_from_folder, delete_project, download_model,
+    export_project, list_huggingface_vision_models, list_photos, list_projects, load_app_config,
+    rename_project, save_app_config, set_photo_decision, set_photo_decisions,
+    start_huggingface_catalog_refresh, system_resource_snapshot,
 };
 use tauri::Manager;
 
@@ -41,6 +41,7 @@ pub fn run() {
             load_app_config,
             save_app_config,
             download_model,
+            cancel_model_download,
             list_huggingface_vision_models,
             system_resource_snapshot,
             export_project

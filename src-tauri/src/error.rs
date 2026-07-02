@@ -46,6 +46,8 @@ pub enum AppError {
     SourcePhotoMissing(String),
     #[error("invalid model download request: {0}")]
     InvalidModelDownload(String),
+    #[error("model download cancelled: {0}")]
+    ModelDownloadCancelled(String),
 }
 
 impl From<AppError> for String {

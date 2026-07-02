@@ -80,6 +80,11 @@ export class ShellController {
     this.task = task;
   }
 
+  updateTask(id: string, next: Partial<Omit<ShellTask, 'id'>>) {
+    if (this.task?.id !== id) return;
+    this.task = { ...this.task, ...next };
+  }
+
   finishTask(id: string, detail = '完成') {
     if (this.task?.id !== id) return;
     this.task = { ...this.task, detail, progress: 100 };
@@ -94,6 +99,14 @@ export class ShellController {
     window.setTimeout(() => {
       if (this.task?.id === id) this.task = null;
     }, 3200);
+  }
+
+  cancelTask(id: string, detail = '已取消') {
+    if (this.task?.id !== id) return;
+    this.task = { ...this.task, detail, progress: null };
+    window.setTimeout(() => {
+      if (this.task?.id === id) this.task = null;
+    }, 1800);
   }
 
   resetPage() {
