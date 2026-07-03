@@ -16,24 +16,28 @@
     type ThirdPartyProviderConfig
   } from '$lib/backend';
   import { shortcuts as seedShortcuts } from '$lib/mockData';
-  import { Alert, AlertDescription } from '$lib/components/ui/alert';
-  import { Badge } from '$lib/components/ui/badge';
   import { Button } from '$lib/components/ui/button';
   import * as Card from '$lib/components/ui/card';
-  import { Input } from '$lib/components/ui/input';
-  import { Kbd } from '$lib/components/ui/kbd';
-  import { NativeSelect, NativeSelectOption } from '$lib/components/ui/native-select';
-  import { Progress } from '$lib/components/ui/progress';
-  import { Switch } from '$lib/components/ui/switch';
-  import * as Table from '$lib/components/ui/table';
+  import ModeParameters from '$lib/settings/ModeParameters.svelte';
+  import ProviderSettings from '$lib/settings/ProviderSettings.svelte';
+  import ShortcutSettings from '$lib/settings/ShortcutSettings.svelte';
+  import {
+    catalogModelFromLocalModel,
+    cloneLocalModels,
+    cloneProviders,
+    formatBytes,
+    formatCompactNumber,
+    legacyProviderId,
+    normalizeProvider,
+    uniqueId,
+    upsertLocalModelFromCatalog,
+    validDownloadUrl,
+    type CatalogStatus,
+    type NumberSettingField
+  } from '$lib/settings/modelHelpers';
   import { getShellContext } from '$lib/shell.svelte';
-  import DownloadIcon from '@lucide/svelte/icons/download';
-  import PlusIcon from '@lucide/svelte/icons/plus';
-  import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
   import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
   import SaveIcon from '@lucide/svelte/icons/save';
-  import Trash2Icon from '@lucide/svelte/icons/trash-2';
-  import XIcon from '@lucide/svelte/icons/x';
   import type { Shortcut } from '$lib/types';
 
   let activeProvider = $state(defaultAppConfig.activeModelProviderId);
@@ -61,7 +65,7 @@
   let downloadProgress = $state<Record<string, ModelDownloadProgress>>({});
   let resumableDownloads = $state<Record<string, number>>({});
   let modelCatalog = $state<HuggingFaceVisionModel[]>([]);
-  let modelCatalogStatus = $state<'ready' | 'fallback'>('fallback');
+  let modelCatalogStatus = $state<CatalogStatus>('fallback');
   let modelCatalogTotal = $state(0);
   let modelCatalogHasMore = $state(false);
   let modelCatalogCacheDate = $state('');
@@ -175,45 +179,9 @@
     dirtyFields = [];
   }
 
-  function normalizeProvider(providerId: string, currentProviders = thirdPartyProviders) {
-    if (providerId === 'llama.cpp' || providerId === 'builtin') return 'llama.cpp';
-    if (providerId === 'ollama') return 'ollama-local';
-    if (providerId === 'openai') return 'openai-compatible';
-    if (currentProviders.some((provider) => provider.id === providerId)) return providerId;
-    return 'llama.cpp';
-  }
-
   function providerName(providerId: string) {
     if (providerId === 'llama.cpp') return '本地模型';
     return thirdPartyProviders.find((provider) => provider.id === providerId)?.name ?? '未配置';
-  }
-
-  function cloneLocalModels(models: LocalModelConfig[]) {
-    return models.map((model) => ({ ...model, localPath: model.localPath ?? null }));
-  }
-
-  function cloneProviders(nextProviders: ThirdPartyProviderConfig[]) {
-    return nextProviders.map((provider) => ({ ...provider }));
-  }
-
-  function uniqueId(seed: string, existing: string[], fallback: string) {
-    const base =
-      seed
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '') || fallback;
-    let candidate = base;
-    let index = 2;
-    while (existing.includes(candidate)) {
-      candidate = `${base}-${index}`;
-      index += 1;
-    }
-    return candidate;
-  }
-
-  function legacyProviderId(providerId: string) {
-    return providerId === 'llama.cpp' ? 'builtin' : providerId;
   }
 
   function resolvedActiveModelId() {
@@ -223,12 +191,6 @@
 
   function selectedLocalModelPath(model: LocalModelConfig) {
     return model.localPath || `${appDataDir}/models/${model.fileName}`;
-  }
-
-  function formatBytes(value: number) {
-    if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
-    if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
-    return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
   }
 
   function progressForModel(modelId: string) {
@@ -257,16 +219,6 @@
     return `${formatCompactNumber(model.downloads)} downloads`;
   }
 
-  function modelSourceText(model: HuggingFaceVisionModel) {
-    return `${model.repoId} · ${model.fileName}`;
-  }
-
-  function modelMetaText(model: HuggingFaceVisionModel) {
-    return [model.task, model.license, `${model.likes} likes`, formatModelDate(model.lastModified)]
-      .filter(Boolean)
-      .join(' · ');
-  }
-
   function removeDownloadProgress(modelId: string) {
     const nextProgress = { ...downloadProgress };
     delete nextProgress[modelId];
@@ -285,54 +237,9 @@
     resumableDownloads = nextDownloads;
   }
 
-  function selectedProviderSummary(provider: ThirdPartyProviderConfig) {
-    if (!provider.enabled) return '已停用';
-    if (!provider.model) return '未填写模型名';
-    return provider.model;
-  }
-
-  function providerInitials(provider: ThirdPartyProviderConfig) {
-    return (provider.name || provider.id).slice(0, 2).toUpperCase();
-  }
-
-  function providerStatusLabel(provider: ThirdPartyProviderConfig) {
-    if (!provider.enabled) return 'OFF';
-    if (!provider.model) return 'SETUP';
-    return 'ON';
-  }
-
-  function providerStatusText(provider: ThirdPartyProviderConfig) {
-    if (!provider.enabled) return '当前停用';
-    if (!provider.baseUrl) return '需要填写 API Host';
-    if (!provider.model) return '需要选择模型';
-    return '可用于专家模式';
-  }
-
   function providerModelSummary(providerId: string) {
     if (providerId === 'llama.cpp') return `llama.cpp 驱动 · ${activeLocalModel?.name ?? activeLocalModelId}`;
     return thirdPartyProviders.find((provider) => provider.id === providerId)?.model || '未指定模型';
-  }
-
-  function catalogModelFromLocalModel(model: LocalModelConfig): HuggingFaceVisionModel {
-    const repoId = model.downloadUrl.match(/huggingface\.co\/([^/]+\/[^/]+)/)?.[1] ?? 'local/models';
-    return {
-      id: model.id,
-      repoId,
-      name: model.name,
-      author: repoId.split('/')[0] ?? 'local',
-      task: model.downloadUrl.includes('huggingface.co') ? 'image-text-to-text' : 'local',
-      license: '未标注',
-      fileName: model.fileName,
-      downloadUrl: model.downloadUrl,
-      downloads: 0,
-      likes: 0,
-      lastModified: 'unknown',
-      downloaded: model.downloaded,
-      updateAvailable: false,
-      localPath: model.localPath,
-      partialDownloadedBytes: 0,
-      partialPath: null
-    };
   }
 
   function resumableBytes(model: HuggingFaceVisionModel) {
@@ -352,19 +259,6 @@
     if (downloadingModelId === model.id) return cancelingModelId === model.id;
     if (downloadingModelId) return true;
     return (model.downloaded && !model.updateAvailable) || !validDownloadUrl(model.downloadUrl);
-  }
-
-  function formatCompactNumber(value: number) {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-    return `${value}`;
-  }
-
-  function formatModelDate(value: string) {
-    if (!value || value === 'unknown') return '未知';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '未知';
-    return date.toISOString().slice(0, 10);
   }
 
   async function loadHuggingFaceCatalog(refresh = false) {
@@ -426,8 +320,16 @@
     newProviderApiKey = '';
   }
 
-  function validDownloadUrl(value: string) {
-    return value.trim().startsWith('https://') || value.trim().startsWith('http://');
+  function setProviderDraftField(field: 'name' | 'baseUrl' | 'model' | 'apiKey', value: string) {
+    if (field === 'name') newProviderName = value;
+    if (field === 'baseUrl') newProviderBaseUrl = value;
+    if (field === 'model') newProviderModel = value;
+    if (field === 'apiKey') newProviderApiKey = value;
+  }
+
+  function cancelProviderDraft() {
+    showProviderDraft = false;
+    resetProviderDraft();
   }
 
   function canDownload(model: LocalModelConfig) {
@@ -599,7 +501,7 @@
           partialPath: null
         };
         modelCatalog = modelCatalog.map((item) => (item.id === model.id ? downloadedModel : item));
-        localModels = upsertLocalModelFromCatalog(downloadedModel, summary.path);
+        localModels = upsertLocalModelFromCatalog(localModels, downloadedModel, summary.path);
         activeProvider = 'llama.cpp';
         activeLocalModelId = model.id;
         downloadMessage = `已${model.updateAvailable ? '更新' : '下载'} ${formatBytes(summary.bytes)} 到 ${summary.path}`;
@@ -620,23 +522,6 @@
       downloadingModelId = '';
       cancelingModelId = '';
     }
-  }
-
-  function upsertLocalModelFromCatalog(model: HuggingFaceVisionModel, localPath: string) {
-    const nextModel: LocalModelConfig = {
-      id: model.id,
-      name: model.name,
-      fileName: model.fileName,
-      size: 'GGUF',
-      speed: 'llama.cpp',
-      downloadUrl: model.downloadUrl,
-      localPath,
-      downloaded: true
-    };
-    if (localModels.some((item) => item.id === model.id || item.fileName === model.fileName)) {
-      return localModels.map((item) => (item.id === model.id || item.fileName === model.fileName ? nextModel : item));
-    }
-    return [...localModels, nextModel];
   }
 
   function addProvider() {
@@ -688,7 +573,7 @@
     markDirty('供应商启用状态');
   }
 
-  function updateNumber(field: 'blur' | 'exposure' | 'cull' | 'threads', value: number) {
+  function updateNumber(field: NumberSettingField, value: number) {
     if (field === 'blur') {
       blurThreshold = value;
       markDirty(`模糊阈值 → ${value}`);
@@ -705,6 +590,25 @@
       vlmThreads = value;
       markDirty(`并发线程 → ${value}`);
     }
+  }
+
+  function setArenaTarget(value: string) {
+    arenaTarget = value;
+    markDirty(`竞技场目标 → ${arenaTarget}`);
+  }
+
+  function toggleAutoGroup() {
+    autoGroup = !autoGroup;
+    markDirty('连拍自动分组');
+  }
+
+  function toggleGpuMetal() {
+    gpuMetal = !gpuMetal;
+    markDirty('GPU 加速');
+  }
+
+  function setEditingShortcut(shortcutId: string) {
+    editingShortcut = shortcutId;
   }
 
   function remapShortcut(event: KeyboardEvent, shortcut: Shortcut) {
@@ -769,366 +673,70 @@
         </p>
       </header>
 
-      <section id="provider" class="section">
-        <div class="settings-head">
-          <h2>模型供应商</h2>
-          <span>{activeProvider} / {activeModelId}</span>
-        </div>
+      <ProviderSettings
+        {activeProvider}
+        {activeModelId}
+        {activeProviderName}
+        {activeProviderConfig}
+        {activeLocalModelId}
+        {appDataDir}
+        {filteredThirdPartyProviders}
+        {providerSearch}
+        {showProviderDraft}
+        providerDraft={{
+          name: newProviderName,
+          baseUrl: newProviderBaseUrl,
+          model: newProviderModel,
+          apiKey: newProviderApiKey
+        }}
+        {downloadingModelId}
+        {modelCatalog}
+        {visibleCatalogModels}
+        {modelCatalogStatus}
+        {modelCatalogTotal}
+        {modelCatalogHasMore}
+        {modelCatalogCacheDate}
+        {modelCatalogSearch}
+        {isCatalogRefreshing}
+        {isLoadingMoreModels}
+        {downloadMessage}
+        {providerModelSummary}
+        setProviderSearch={(value) => (providerSearch = value)}
+        {setProviderDraftField}
+        showDraft={() => (showProviderDraft = true)}
+        cancelDraft={cancelProviderDraft}
+        {addProvider}
+        {removeProvider}
+        {toggleProvider}
+        {selectProvider}
+        {updateProvider}
+        {progressForModel}
+        {progressButtonLabel}
+        {modelStatusText}
+        {resumableBytes}
+        {modelActionDisabled}
+        setModelCatalogSearch={(value) => (modelCatalogSearch = value)}
+        refreshCatalog={() => void loadHuggingFaceCatalog(true)}
+        loadMoreModels={() => void loadMoreHuggingFaceModels()}
+        downloadCatalogModel={(model) => void downloadCatalogModel(model)}
+        cancelActiveModelDownload={(modelId) => void cancelActiveModelDownload(modelId)}
+      />
 
-        <div class="provider-workspace">
-          <aside class="provider-directory" aria-label="模型供应商列表">
-            <div class="directory-search">
-              <Input bind:value={providerSearch} placeholder="搜索供应商、模型或地址" aria-label="搜索模型供应商" />
-            </div>
+      <ModeParameters
+        {blurThreshold}
+        {exposureTolerance}
+        {cullLine}
+        {vlmThreads}
+        {arenaTarget}
+        {autoGroup}
+        {gpuMetal}
+        {updateNumber}
+        {setArenaTarget}
+        {toggleAutoGroup}
+        {toggleGpuMetal}
+      />
 
-            <Button
-              variant="ghost"
-              class={['provider-list-item', activeProvider === 'llama.cpp' && 'active'].filter(Boolean).join(' ')}
-              aria-pressed={activeProvider === 'llama.cpp'}
-              onclick={() => selectProvider('llama.cpp')}
-            >
-              <span class="provider-avatar local">ll</span>
-              <span class="provider-list-copy">
-                <strong>本地模型</strong>
-                <small>{providerModelSummary('llama.cpp')}</small>
-              </span>
-              <Badge class="provider-pill local" variant="secondary">LOCAL</Badge>
-            </Button>
-
-            <div class="directory-divider">
-              <span>第三方供应商</span>
-              <span>{filteredThirdPartyProviders.length}</span>
-            </div>
-
-            {#each filteredThirdPartyProviders as provider (provider.id)}
-              <Button
-                variant="ghost"
-                class={['provider-list-item', activeProvider === provider.id && 'active'].filter(Boolean).join(' ')}
-                aria-pressed={activeProvider === provider.id}
-                onclick={() => selectProvider(provider.id)}
-              >
-                <span class="provider-avatar">{providerInitials(provider)}</span>
-                <span class="provider-list-copy">
-                  <strong>{provider.name || provider.id}</strong>
-                  <small>{selectedProviderSummary(provider)}</small>
-                </span>
-                <Badge class={['provider-pill', provider.enabled && provider.model && 'on'].filter(Boolean).join(' ')} variant={provider.enabled && provider.model ? 'secondary' : 'outline'}>
-                  {providerStatusLabel(provider)}
-                </Badge>
-              </Button>
-            {/each}
-
-            {#if showProviderDraft}
-              <div class="provider-draft">
-                <label>
-                  <span>名称</span>
-                  <Input bind:value={newProviderName} placeholder="例如 SiliconFlow" />
-                </label>
-                <label>
-                  <span>API Host</span>
-                  <Input bind:value={newProviderBaseUrl} placeholder="https://api.example.com/v1" />
-                </label>
-                <label>
-                  <span>默认模型</span>
-                  <Input bind:value={newProviderModel} placeholder="provider/model-name" />
-                </label>
-                <label>
-                  <span>API Key</span>
-                  <Input type="password" bind:value={newProviderApiKey} placeholder="可选" />
-                </label>
-                <div class="draft-actions">
-                  <Button variant="outline" onclick={() => { showProviderDraft = false; resetProviderDraft(); }}>
-                    <XIcon data-icon="inline-start" aria-hidden="true" />
-                    取消
-                  </Button>
-                  <Button onclick={addProvider}>
-                    <PlusIcon data-icon="inline-start" aria-hidden="true" />
-                    添加
-                  </Button>
-                </div>
-              </div>
-            {:else}
-              <Button variant="outline" class="provider-add-button" onclick={() => (showProviderDraft = true)}>
-                <PlusIcon data-icon="inline-start" aria-hidden="true" />
-                添加供应商
-              </Button>
-            {/if}
-          </aside>
-
-          <div class="provider-panel">
-            <div class="provider-panel-head">
-              <div>
-                <h3>{activeProviderName}</h3>
-                <p>{activeProvider === 'llama.cpp' ? '由 llama.cpp 驱动 · 从 Hugging Face 下载 GGUF 视觉模型' : activeProviderConfig ? providerStatusText(activeProviderConfig) : '未选择供应商'}</p>
-              </div>
-              {#if activeProviderConfig}
-                <div class="provider-head-actions">
-                  <Switch
-                    aria-label="切换供应商启用状态"
-                    checked={activeProviderConfig.enabled}
-                    onclick={() => toggleProvider(activeProviderConfig.id)}
-                  />
-                  <Button variant="destructive" size="sm" onclick={() => removeProvider(activeProviderConfig.id)}>
-                    <Trash2Icon data-icon="inline-start" aria-hidden="true" />
-                    删除
-                  </Button>
-                </div>
-              {/if}
-            </div>
-
-            {#if activeProvider === 'llama.cpp'}
-              <Card.Root class="local-model-summary" size="sm">
-                <div>
-                  <span>保存位置</span>
-                  <strong>{`${appDataDir}/models`}</strong>
-                </div>
-                <div>
-                  <span>下载来源</span>
-                  <strong>Hugging Face</strong>
-                </div>
-                <div>
-                  <span>任务状态</span>
-                  <strong>{downloadingModelId ? '下载中' : '空闲'}</strong>
-                </div>
-              </Card.Root>
-
-              <div id="models" class="model-library">
-                <div class="model-library-title">
-                  <h4>模型库</h4>
-                  <span>
-                    {#if isCatalogRefreshing && !modelCatalog.length}
-                      读取中
-                    {:else if modelCatalogStatus === 'fallback'}
-                      本地列表
-                    {:else}
-                      {visibleCatalogModels.length} / {modelCatalogTotal} · {modelCatalogCacheDate}
-                    {/if}
-                  </span>
-                </div>
-
-                <div class="model-catalog-toolbar">
-                  <Input bind:value={modelCatalogSearch} placeholder="搜索 Hugging Face 视觉模型" aria-label="搜索 Hugging Face 视觉模型" />
-                  <Button variant="outline" size="sm" disabled={isCatalogRefreshing} onclick={() => void loadHuggingFaceCatalog(true)}>
-                    <RefreshCwIcon data-icon="inline-start" aria-hidden="true" />
-                    {isCatalogRefreshing ? '刷新中' : '刷新缓存'}
-                  </Button>
-                </div>
-
-                <div class="hf-model-table" role="list" aria-label="Hugging Face 视觉模型">
-                  {#each visibleCatalogModels as model (model.id)}
-                    {@const progress = progressForModel(model.id)}
-                    {@const partialBytes = resumableBytes(model)}
-                    <Card.Root class={['hf-model-row', model.id === activeLocalModelId && 'active'].filter(Boolean).join(' ')} role="listitem" size="sm">
-                      <div class="hf-model-name">
-                        <span class="model-icon">{model.name.slice(0, 1)}</span>
-                        <span class="hf-model-copy">
-                          <strong>{model.name}</strong>
-                          <small>{modelSourceText(model)}</small>
-                          <em>{modelMetaText(model)}</em>
-                        </span>
-                      </div>
-                      <span class="hf-model-action">
-                        <small>{modelStatusText(model, partialBytes)}</small>
-                        <Button
-                          size="sm"
-                          variant={downloadingModelId === model.id ? 'destructive' : model.downloaded && !model.updateAvailable ? 'secondary' : 'outline'}
-                          class={[
-                            'model-action',
-                            model.downloaded && !model.updateAvailable && 'done',
-                            model.updateAvailable && 'update',
-                            downloadingModelId === model.id && 'cancel'
-                          ].filter(Boolean).join(' ')}
-                          disabled={modelActionDisabled(model)}
-                          onclick={() =>
-                            void (downloadingModelId === model.id ? cancelActiveModelDownload(model.id) : downloadCatalogModel(model))}
-                        >
-                          {#if downloadingModelId !== model.id && (!model.downloaded || model.updateAvailable)}
-                            <DownloadIcon data-icon="inline-start" aria-hidden="true" />
-                          {/if}
-                          {progressButtonLabel(model, progress)}
-                        </Button>
-                        {#if progress}
-                          <Progress class="download-progress-track" aria-label="下载进度" value={progress.percent ?? 0} />
-                        {/if}
-                      </span>
-                    </Card.Root>
-                  {:else}
-                    <div class="hf-model-empty">没有匹配的视觉模型。</div>
-                  {/each}
-                </div>
-
-                {#if modelCatalogHasMore && !modelCatalogSearch.trim()}
-                  <Button variant="outline" class="load-more-models" disabled={isLoadingMoreModels} onclick={() => void loadMoreHuggingFaceModels()}>
-                    {isLoadingMoreModels ? '加载中' : `加载更多 · ${modelCatalog.length} / ${modelCatalogTotal}`}
-                  </Button>
-                {/if}
-
-                {#if downloadMessage}
-                  <p class="download-message">{downloadMessage}</p>
-                {/if}
-              </div>
-            {:else if activeProviderConfig}
-              <div class="provider-fields remote-provider-fields">
-                <label>
-                  <span>供应商 ID</span>
-                  <Input value={activeProviderConfig.id} readonly />
-                </label>
-                <label>
-                  <span>类型</span>
-                  <Input value="@ai-sdk/openai-compatible" readonly />
-                </label>
-                <label>
-                  <span>名称</span>
-                  <Input value={activeProviderConfig.name} oninput={(event) => updateProvider(activeProviderConfig.id, 'name', event.currentTarget.value)} />
-                </label>
-                <label>
-                  <span>Base URL</span>
-                  <Input value={activeProviderConfig.baseUrl} placeholder="http://localhost:11434/v1" oninput={(event) => updateProvider(activeProviderConfig.id, 'baseUrl', event.currentTarget.value)} />
-                </label>
-                <label>
-                  <span>API Key</span>
-                  <Input type="password" value={activeProviderConfig.apiKey} placeholder="本地服务可留空" oninput={(event) => updateProvider(activeProviderConfig.id, 'apiKey', event.currentTarget.value)} />
-                </label>
-                <label>
-                  <span>Model ID</span>
-                  <Input value={activeProviderConfig.model} placeholder="llava:latest / gpt-4o-mini" oninput={(event) => updateProvider(activeProviderConfig.id, 'model', event.currentTarget.value)} />
-                </label>
-              </div>
-
-              <div id="models" class="remote-models">
-                <div class="model-library-title">
-                  <h4>默认模型</h4>
-                  <span>{activeProviderConfig.enabled ? '启用' : '停用'}</span>
-                </div>
-                <Card.Root class="remote-model-row" size="sm">
-                  <span class="model-icon">{(activeProviderConfig.model || '?').slice(0, 1).toUpperCase()}</span>
-                  <div>
-                    <strong>{activeProviderConfig.model || '尚未填写模型 ID'}</strong>
-                    <small>{activeProviderConfig.baseUrl || '尚未配置 API Host'}</small>
-                  </div>
-                  <Button variant="outline" size="sm" onclick={() => selectProvider(activeProviderConfig.id)}>使用</Button>
-                </Card.Root>
-              </div>
-            {:else}
-              <Alert class="empty-provider">
-                <strong>未选择可用供应商</strong>
-                <AlertDescription>请选择 llama.cpp 或添加一个 OpenAI-compatible provider。</AlertDescription>
-              </Alert>
-            {/if}
-
-          </div>
-        </div>
-      </section>
-
-      <section id="modes" class="section">
-        <div class="settings-head">
-          <h2>模式参数</h2>
-          <span>阈值决定自动淘汰的激进程度</span>
-        </div>
-        <p class="section-copy">快速模式会读取模糊、曝光、淘汰线和连拍分组参数；竞技场与 VLM 线程参数会先保存为后续能力配置。</p>
-
-        <div class="form-row">
-          <span><strong>模糊检测阈值</strong><small>Laplacian 方差低于此值判定模糊</small></span>
-          <label class="range-control">
-            <Input type="range" min="0" max="300" step="5" value={blurThreshold} oninput={(event) => updateNumber('blur', Number(event.currentTarget.value))} />
-            <span>{blurThreshold}.0</span>
-          </label>
-          <span class="form-value">默认 100</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>曝光宽容度</strong><small>直方图两端裁切比例</small></span>
-          <label class="range-control">
-            <Input type="range" min="0" max="0.1" step="0.001" value={exposureTolerance} oninput={(event) => updateNumber('exposure', Number(event.currentTarget.value))} />
-            <span>{exposureTolerance.toFixed(3)}</span>
-          </label>
-          <span class="form-value">0.018</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>质量分淘汰线</strong><small>低于此值自动进入淘汰池</small></span>
-          <label class="range-control">
-            <Input type="range" min="0" max="100" step="1" value={cullLine} oninput={(event) => updateNumber('cull', Number(event.currentTarget.value))} />
-            <span>{cullLine} / 100</span>
-          </label>
-          <span class="form-value">自动模式</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>竞技场目标保留</strong><small>循环 PK 直到剩余此比例</small></span>
-          <NativeSelect bind:value={arenaTarget} onchange={() => markDirty(`竞技场目标 → ${arenaTarget}`)}>
-            <NativeSelectOption>10%</NativeSelectOption>
-            <NativeSelectOption>20%</NativeSelectOption>
-            <NativeSelectOption>30%</NativeSelectOption>
-            <NativeSelectOption>50%</NativeSelectOption>
-          </NativeSelect>
-          <span class="form-value">约 250 张</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>并发推理线程</strong><small>Semaphore 同时进行的 VLM 调用数</small></span>
-          <label class="range-control">
-            <Input type="range" min="1" max="8" step="1" value={vlmThreads} oninput={(event) => updateNumber('threads', Number(event.currentTarget.value))} />
-            <span>{vlmThreads}</span>
-          </label>
-          <span class="form-value">最大 8</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>连拍自动分组</strong><small>基于 pHash 相似度自动聚合连拍</small></span>
-          <Switch
-            aria-label="切换连拍自动分组"
-            checked={autoGroup}
-            onclick={() => { autoGroup = !autoGroup; markDirty('连拍自动分组'); }}
-          />
-          <span class="form-value">{autoGroup ? '已开启' : '已关闭'}</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>GPU 加速 · Metal</strong><small>使用 Apple GPU 进行推理加速</small></span>
-          <Switch
-            aria-label="切换 Metal GPU 加速"
-            checked={gpuMetal}
-            onclick={() => { gpuMetal = !gpuMetal; markDirty('GPU 加速'); }}
-          />
-          <span class="form-value">{gpuMetal ? '已开启' : '已关闭'}</span>
-        </div>
-      </section>
-
-      <section id="shortcuts" class="section">
-        <div class="settings-head">
-          <h2>键盘快捷键</h2>
-          <span>点击按键即可重映射 · 文本框中自动暂停</span>
-        </div>
-        <p class="section-copy">摄影师的肌肉记忆比工具默认值重要。点击任意快捷键单元即可重映射，保存后挑选页会按本地配置执行。</p>
-        <Table.Root class="shortcuts-table">
-          <Table.Header>
-            <Table.Row><Table.Head>动作</Table.Head><Table.Head>场景</Table.Head><Table.Head>快捷键</Table.Head></Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {#each shortcuts as shortcut (shortcut.id)}
-              <Table.Row>
-                <Table.Cell>{shortcut.action}</Table.Cell>
-                <Table.Cell>{shortcut.scenario}</Table.Cell>
-                <Table.Cell class="keys">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    class={['kbd-cell', editingShortcut === shortcut.id && 'editing'].filter(Boolean).join(' ')}
-                    onkeydown={(event) => remapShortcut(event, shortcut)}
-                    onclick={() => (editingShortcut = shortcut.id)}
-                  >
-                    {#each shortcut.keys as key (`${shortcut.id}-${key}`)}
-                      <Kbd class="kbd">{key}</Kbd>
-                    {/each}
-                    <span class="hint">{editingShortcut === shortcut.id ? '按键...' : '编辑'}</span>
-                  </Button>
-                </Table.Cell>
-              </Table.Row>
-            {/each}
-          </Table.Body>
-        </Table.Root>
-      </section>
+      <ShortcutSettings {shortcuts} {editingShortcut} {setEditingShortcut} {remapShortcut} />
 
       <section id="about" class="section">
         <div class="settings-head">
@@ -1212,609 +820,9 @@
     font-weight: 500;
   }
 
-  .settings-head span,
-  .section-copy {
+  .settings-head span {
     color: var(--muted-foreground);
     font-size: 12px;
-  }
-
-  .section-copy {
-    max-width: 72ch;
-    margin: -8px 0 18px;
-    line-height: 1.65;
-  }
-
-  .provider-workspace {
-    display: grid;
-    grid-template-columns: 300px minmax(0, 1fr);
-    min-height: 560px;
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--card);
-    box-shadow: var(--shadow-soft);
-  }
-
-  .provider-directory {
-    display: grid;
-    grid-auto-rows: max-content;
-    gap: 8px;
-    border-right: 1px solid var(--border);
-    background: color-mix(in oklch, var(--card) 92%, var(--muted));
-    padding: 14px 12px;
-  }
-
-  .directory-search :global(input) {
-    width: 100%;
-    border-radius: 999px;
-    background: var(--card);
-    padding: 10px 14px;
-  }
-
-  .directory-divider,
-  .model-library-title,
-  .draft-actions,
-  .provider-head-actions {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .directory-divider {
-    margin: 8px 4px 2px;
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-transform: uppercase;
-  }
-
-  :global(.provider-list-item) {
-    display: grid;
-    grid-template-columns: 34px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 11px;
-    min-height: 54px;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    background: transparent;
-    padding: 8px 10px;
-    text-align: left;
-  }
-
-  :global(.provider-list-item:hover),
-  :global(.provider-list-item.active) {
-    border-color: color-mix(in oklch, var(--success) 32%, var(--border));
-    background: var(--card);
-  }
-
-  :global(.provider-list-item.active) {
-    box-shadow: var(--shadow-soft);
-  }
-
-  .provider-avatar,
-  .model-icon {
-    display: grid;
-    place-items: center;
-    width: 34px;
-    height: 34px;
-    flex: 0 0 auto;
-    border-radius: 50%;
-    background: color-mix(in oklch, var(--primary) 12%, var(--card));
-    color: var(--primary);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-  }
-
-  .provider-avatar.local {
-    background: color-mix(in oklch, var(--success) 13%, var(--card));
-    color: var(--success);
-  }
-
-  .provider-list-copy {
-    min-width: 0;
-  }
-
-  .provider-list-copy strong,
-  :global(.remote-model-row strong) {
-    display: block;
-    overflow: hidden;
-    color: var(--fg);
-    font-size: 14px;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .provider-list-copy small,
-  :global(.remote-model-row small) {
-    display: block;
-    overflow: hidden;
-    color: var(--muted-foreground);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  :global(.provider-pill),
-  :global(.model-state) {
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--secondary);
-    color: var(--muted-foreground);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    padding: 3px 8px;
-  }
-
-  :global(.provider-pill.on),
-  :global(.provider-pill.local),
-  :global(.model-state.ready) {
-    border-color: color-mix(in oklch, var(--success) 45%, var(--border));
-    background: color-mix(in oklch, var(--success) 13%, var(--card));
-    color: var(--success);
-  }
-
-  :global(.provider-add-button) {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    min-height: 40px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--card);
-    color: var(--fg-2);
-    font-weight: 700;
-  }
-
-  .provider-workspace :global([data-slot="button"]:focus) {
-    outline: none;
-  }
-
-  .provider-workspace :global([data-slot="button"]:focus-visible),
-  .provider-workspace :global(input:focus-visible) {
-    outline: 2px solid color-mix(in oklch, var(--success) 28%, transparent);
-    outline-offset: 2px;
-  }
-
-  .provider-draft {
-    display: grid;
-    gap: 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--card);
-    padding: 12px;
-  }
-
-  .provider-draft label,
-  .provider-fields label {
-    display: grid;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .provider-draft span,
-  .provider-fields span {
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-transform: uppercase;
-  }
-
-  .provider-panel {
-    display: grid;
-    align-content: start;
-    gap: 18px;
-    min-width: 0;
-    background: var(--card);
-    padding: 22px 26px 28px;
-  }
-
-  .provider-panel-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    min-height: 52px;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 18px;
-  }
-
-  .provider-panel-head h3 {
-    margin: 0 0 4px;
-    color: var(--fg);
-    font-size: 18px;
-    font-weight: 800;
-  }
-
-  .provider-panel-head p {
-    margin: 0;
-    color: var(--muted-foreground);
-    font-size: 12px;
-    overflow-wrap: anywhere;
-  }
-
-  .provider-fields {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px 16px;
-  }
-
-  .remote-provider-fields {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: color-mix(in oklch, var(--card) 96%, var(--muted));
-    padding: 16px;
-  }
-
-  :global(.local-model-summary) {
-    display: grid;
-    grid-template-columns: 1.45fr 0.8fr 0.65fr;
-    gap: 1px;
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--border);
-  }
-
-  :global(.local-model-summary div) {
-    display: grid;
-    gap: 5px;
-    min-width: 0;
-    background: color-mix(in oklch, var(--card) 92%, var(--muted));
-    padding: 12px 14px;
-  }
-
-  :global(.local-model-summary span) {
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-transform: uppercase;
-  }
-
-  :global(.local-model-summary strong) {
-    overflow: hidden;
-    color: var(--fg-2);
-    font-size: 12px;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  :global(input[readonly]) {
-    color: var(--meta);
-    cursor: default;
-  }
-
-  .model-library,
-  .remote-models {
-    display: grid;
-    gap: 12px;
-  }
-
-  .model-library-title h4 {
-    margin: 0;
-    color: var(--fg);
-    font-size: 16px;
-    font-weight: 800;
-  }
-
-  .model-library-title span {
-    color: var(--muted-foreground);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
-  .model-catalog-toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-  }
-
-  .model-catalog-toolbar :global(input) {
-    width: 100%;
-    border-radius: 999px;
-    background: var(--card);
-    padding: 10px 14px;
-  }
-
-  .hf-model-table {
-    display: grid;
-    gap: 8px;
-  }
-
-  :global(.hf-model-row) {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 140px;
-    align-items: center;
-    gap: 18px;
-    min-height: 82px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--card);
-    padding: 12px 14px;
-  }
-
-  :global(.hf-model-row:hover),
-  :global(.hf-model-row.active) {
-    border-color: color-mix(in oklch, var(--success) 34%, var(--border));
-    background: color-mix(in oklch, var(--success) 6%, var(--card));
-  }
-
-  :global(.hf-model-row.active) {
-    box-shadow: inset 3px 0 0 var(--success), var(--shadow-soft);
-  }
-
-  .hf-model-name {
-    display: grid;
-    grid-template-columns: 34px minmax(0, 1fr);
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-  }
-
-  .hf-model-name strong {
-    display: block;
-    overflow: hidden;
-    color: var(--fg);
-    font-size: 14px;
-    font-weight: 800;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .hf-model-copy {
-    min-width: 0;
-  }
-
-  .hf-model-name small,
-  .hf-model-copy em {
-    display: block;
-    overflow: hidden;
-    color: var(--muted-foreground);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .hf-model-copy em {
-    margin-top: 3px;
-    color: var(--meta);
-    font-style: normal;
-  }
-
-  .hf-model-action {
-    display: grid;
-    justify-items: end;
-    gap: 7px;
-    min-width: 0;
-  }
-
-  .hf-model-action small {
-    max-width: 140px;
-    overflow: hidden;
-    color: var(--fg-2);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1.2;
-    text-align: right;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  :global(.download-progress-track) {
-    width: 100%;
-    height: 4px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--muted);
-  }
-
-  :global(.download-progress-track [data-slot="progress-indicator"]) {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: var(--success);
-    transition: width 160ms ease;
-  }
-
-  .hf-model-empty {
-    color: var(--meta);
-    padding: 18px;
-  }
-
-  :global(.load-more-models) {
-    width: 100%;
-    min-height: 38px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--card);
-    color: var(--fg-2);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
-  :global(.load-more-models:disabled) {
-    color: var(--meta);
-    cursor: progress;
-  }
-
-  :global(.remote-model-row) {
-    display: grid;
-    grid-template-columns: 34px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
-    min-height: 68px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--card);
-    padding: 12px 18px;
-    text-align: left;
-  }
-
-  :global(.empty-provider) {
-    display: grid;
-    gap: 14px;
-    border: 1px solid color-mix(in oklch, var(--success) 24%, var(--border));
-    border-radius: 8px;
-    background: color-mix(in oklch, var(--success) 6%, var(--card));
-    padding: 16px;
-  }
-
-  :global(.model-action),
-  .form-value {
-    color: var(--fg-2);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-    white-space: pre-line;
-  }
-
-  :global(.model-action) {
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--accent);
-    padding: 5px 10px;
-    text-transform: uppercase;
-  }
-
-  :global(.model-action:disabled) {
-    border-color: var(--border-soft);
-    color: var(--meta);
-    cursor: not-allowed;
-  }
-
-  :global(.model-action.done) {
-    border-color: color-mix(in oklch, var(--success) 45%, var(--border));
-    background: color-mix(in oklch, var(--success) 13%, var(--card));
-    color: var(--success);
-  }
-
-  :global(.model-action.update) {
-    border-color: color-mix(in oklch, var(--warn) 42%, var(--border));
-    background: color-mix(in oklch, var(--warn) 12%, var(--card));
-    color: var(--warn);
-  }
-
-  :global(.model-action.cancel) {
-    border-color: color-mix(in oklch, var(--danger) 38%, var(--border));
-    background: color-mix(in oklch, var(--danger) 10%, var(--card));
-    color: var(--danger);
-  }
-
-  .download-message {
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    margin: 10px 0 0;
-    overflow-wrap: anywhere;
-  }
-
-  .form-row {
-    display: grid;
-    grid-template-columns: 210px 1fr 90px;
-    align-items: center;
-    gap: 24px;
-    border-bottom: 1px solid var(--border-soft);
-    padding: 14px 0;
-  }
-
-  .form-row strong {
-    display: block;
-    font-family: var(--font-display);
-    font-size: 14px;
-    font-weight: 500;
-  }
-
-  .form-row small {
-    display: block;
-    margin-top: 3px;
-    color: var(--meta);
-    font-size: 12px;
-  }
-
-  .range-control {
-    display: grid;
-    grid-template-columns: minmax(120px, 280px) 76px;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .range-control :global(input[type="range"]) {
-    width: 100%;
-    accent-color: var(--accent);
-  }
-
-  .range-control span {
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 12px;
-  }
-
-  :global(.shortcuts-table) {
-    width: 100%;
-    border-collapse: collapse;
-  }
-
-  :global(.shortcuts-table th),
-  :global(.shortcuts-table td) {
-    border-bottom: 1px solid var(--border-soft);
-    padding: 10px 14px;
-    text-align: left;
-  }
-
-  :global(.shortcuts-table th) {
-    border-bottom-color: var(--border);
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 1.1px;
-    text-transform: uppercase;
-  }
-
-  :global(.shortcuts-table td:first-child) {
-    color: var(--fg);
-    font-family: var(--font-display);
-    font-weight: 500;
-  }
-
-  :global(.shortcuts-table td:nth-child(2)) {
-    color: var(--muted-foreground);
-    font-size: 12px;
-  }
-
-  :global(.keys) {
-    text-align: right;
-  }
-
-  :global(.kbd-cell) {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    border-radius: 4px;
-    background: transparent;
-    padding: 4px 8px;
-  }
-
-  :global(.kbd-cell:hover),
-  :global(.kbd-cell.editing) {
-    background: var(--tag-bg-soft);
-  }
-
-  .hint {
-    margin-left: 6px;
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 9px;
-    text-transform: uppercase;
   }
 
   :global(.colophon) {
@@ -1914,66 +922,8 @@
   }
 
   @media (max-width: 1000px) {
-    .provider-workspace {
-      grid-template-columns: 1fr;
-    }
-
-    .provider-directory {
-      border-right: 0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .provider-fields {
-      grid-template-columns: 1fr;
-    }
-
-    :global(.local-model-summary) {
-      grid-template-columns: 1fr;
-    }
-
-    .form-row {
-      grid-template-columns: 1fr;
-      align-items: start;
-    }
-
-    .provider-panel-head,
-    :global(.remote-model-row),
-    :global(.hf-model-row) {
-      flex-direction: column;
-      align-items: stretch;
-    }
-
-    :global(.remote-model-row) {
-      grid-template-columns: 34px minmax(0, 1fr);
-    }
-
-    :global(.remote-model-row .model-action) {
-      grid-column: 2;
-      justify-self: start;
-    }
-
-    :global(.hf-model-row) {
-      grid-template-columns: 1fr;
-      align-items: start;
-      gap: 8px;
-      padding: 14px;
-    }
-
-    .hf-model-action {
-      justify-items: start;
-      width: 100%;
-    }
-
-    .hf-model-action small {
-      text-align: left;
-    }
-
-    .model-catalog-toolbar {
-      grid-template-columns: 1fr;
-    }
-
-    .save-bar,
-    .settings-head {
+    .settings-head,
+    .save-bar {
       align-items: flex-start;
       flex-direction: column;
     }
