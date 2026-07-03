@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { RangeCalendar as RangeCalendarPrimitive } from "bits-ui";
-	import CaretLeftIcon from 'phosphor-svelte/lib/CaretLeft';
+	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import { buttonVariants, type ButtonVariant } from "$lib/components/ui/button/index.js";
 	import { cn } from "$lib/utils.js";
 
@@ -16,7 +16,7 @@
 </script>
 
 {#snippet Fallback()}
-	<CaretLeftIcon class={cn("size-4", className)} />
+	<ChevronLeftIcon class={cn("size-4", className)} />
 {/snippet}
 
 <RangeCalendarPrimitive.PrevButton
