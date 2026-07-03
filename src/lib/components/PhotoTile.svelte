@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Badge } from '$lib/components/ui/badge';
   import type { Decision, Photo } from '$lib/types';
 
   interface Props {
@@ -33,9 +34,9 @@
   {:else}
     <span class="photo-fill" style:background={photo.palette}></span>
   {/if}
-  <span class={['score-badge', scoreClass].filter(Boolean).join(' ')}>{photo.score}</span>
+  <Badge class={['score-badge', scoreClass].filter(Boolean).join(' ')} variant="secondary">{photo.score}</Badge>
   {#if photo.decision}
-    <span class={['decision-mark', decisionClass].filter(Boolean).join(' ')}>{decisionLabel(photo.decision)}</span>
+    <Badge class={['decision-mark', decisionClass].filter(Boolean).join(' ')}>{decisionLabel(photo.decision)}</Badge>
   {/if}
   <span class="photo-info">
     <span class="seq">{photo.name}</span>

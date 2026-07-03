@@ -3,6 +3,10 @@
   import { onDestroy, onMount } from 'svelte';
   import InspectorPanel from '$lib/components/InspectorPanel.svelte';
   import PhotoTile from '$lib/components/PhotoTile.svelte';
+  import { Alert, AlertDescription } from '$lib/components/ui/alert';
+  import { Badge } from '$lib/components/ui/badge';
+  import { Button } from '$lib/components/ui/button';
+  import { Progress } from '$lib/components/ui/progress';
   import { describeExportError } from '$lib/exportMessages';
   import {
     backendPhotoToPhoto,
@@ -607,61 +611,62 @@
       <header class="toolbar">
         <div class="toolbar-left">
           <h1 class="panel-title">{project.name}</h1>
-          <span class={`tag tag-${project.mode}`}>{project.mode}</span>
+          <Badge class={`tag tag-${project.mode}`} variant="secondary">{project.mode}</Badge>
         </div>
         <div class="toolbar-right">
           <div class="filter-group">
             {#each filters as item (item.id)}
-              <button
-                type="button"
+              <Button
+                variant={filter === item.id ? 'secondary' : 'ghost'}
+                size="sm"
                 class={filter === item.id ? 'active' : ''}
                 onclick={() => chooseFilter(item.id)}
               >
                 {item.label}<span>{item.count()}</span>
-              </button>
+              </Button>
             {/each}
           </div>
-          <button class="btn btn-secondary sort-button" type="button" onclick={cycleSortMode}>
+          <Button class="sort-button" variant="outline" size="sm" onclick={cycleSortMode}>
             排序 · {activeSortLabel}
-          </button>
-          <button class="btn btn-secondary" type="button" onclick={openLightbox} disabled={!selectedPhoto}>
+          </Button>
+          <Button variant="outline" size="sm" onclick={openLightbox} disabled={!selectedPhoto}>
             灯箱 · {shortcutLabel('fullscreen')}
-          </button>
+          </Button>
           <div class="batch-actions" aria-label="批量标记当前筛选照片">
-            <button type="button" onclick={() => void setVisibleDecisions('keep')} disabled={isBatchUpdating || filteredPhotos.length === 0}>
+            <Button variant="ghost" size="sm" onclick={() => void setVisibleDecisions('keep')} disabled={isBatchUpdating || filteredPhotos.length === 0}>
               当前全要
-            </button>
-            <button type="button" class="danger" onclick={() => void setVisibleDecisions('cull')} disabled={isBatchUpdating || filteredPhotos.length === 0}>
+            </Button>
+            <Button variant="destructive" size="sm" onclick={() => void setVisibleDecisions('cull')} disabled={isBatchUpdating || filteredPhotos.length === 0}>
               当前全不要
-            </button>
-            <button type="button" onclick={() => void setVisibleDecisions(null)} disabled={isBatchUpdating || filteredPhotos.length === 0}>
+            </Button>
+            <Button variant="ghost" size="sm" onclick={() => void setVisibleDecisions(null)} disabled={isBatchUpdating || filteredPhotos.length === 0}>
               清空标记
-            </button>
+            </Button>
           </div>
-          <button class="btn btn-ghost export-button" type="button" onclick={() => void exportCurrentProject()} disabled={isExporting || isBatchUpdating}>
+          <Button class="export-button" variant="ghost" size="sm" onclick={() => void exportCurrentProject()} disabled={isExporting || isBatchUpdating}>
             {isExporting ? '导出中' : '导出'}
-          </button>
+          </Button>
         </div>
       </header>
 
       {#if exportMessage}
-        <div class="export-note">
-          <span>{exportMessage}</span>
+        <Alert class="export-note">
+          <AlertDescription>{exportMessage}</AlertDescription>
           {#if lastExportZipPath}
-            <button type="button" onclick={() => void revealLastExport()}>打开导出目录</button>
+            <Button variant="outline" size="sm" onclick={() => void revealLastExport()}>打开导出目录</Button>
           {/if}
-        </div>
+        </Alert>
       {/if}
 
       {#if isLoadingProject || projectMessage}
-        <div class="project-note" role="status">
-          {isLoadingProject ? '正在加载项目照片...' : projectMessage}
-        </div>
+        <Alert class="project-note">
+          <AlertDescription>{isLoadingProject ? '正在加载项目照片...' : projectMessage}</AlertDescription>
+        </Alert>
       {/if}
 
       <div class="progress">
         <span class="num">进度</span>
-        <div class="progress-bar" aria-hidden="true"><span style:width={`${progressPercent}%`}></span></div>
+        <Progress class="progress-bar" value={progressPercent} />
         <div class="progress-stats">
           <span class="keep">保留 {keptCount}</span>
           <span class="cull">淘汰 {culledCount}</span>
@@ -680,14 +685,14 @@
           {#if hiddenPhotoCount > 0}
             <div class="load-more">
               <span>已渲染 {visibleFilteredPhotos.length.toLocaleString()} / {filteredPhotos.length.toLocaleString()} 张</span>
-              <button type="button" onclick={loadMoreVisiblePhotos}>加载更多</button>
+              <Button variant="outline" size="sm" onclick={loadMoreVisiblePhotos}>加载更多</Button>
             </div>
           {/if}
         {:else}
           <div class="empty-state">
             <strong>{emptyTitle}</strong>
             <span>{emptyCopy}</span>
-            <a class="btn btn-secondary" href={resolve('/')}>返回主控台</a>
+            <Button href={resolve('/')} variant="outline">返回主控台</Button>
           </div>
         {/if}
       </div>
@@ -714,12 +719,12 @@
           <span>{currentPosition} / {photos.length} · {selectedPhoto.score}/100 · {selectedPhoto.size}</span>
         </div>
         <div class="lightbox-actions">
-          <button type="button" onclick={() => moveBy(-1)} disabled={filteredPhotos.length <= 1}>上一张</button>
-          <button type="button" onclick={() => moveBy(1)} disabled={filteredPhotos.length <= 1}>下一张</button>
-          <button type="button" onclick={() => (isLightboxZoomed = !isLightboxZoomed)}>
+          <Button variant="outline" size="sm" onclick={() => moveBy(-1)} disabled={filteredPhotos.length <= 1}>上一张</Button>
+          <Button variant="outline" size="sm" onclick={() => moveBy(1)} disabled={filteredPhotos.length <= 1}>下一张</Button>
+          <Button variant="outline" size="sm" onclick={() => (isLightboxZoomed = !isLightboxZoomed)}>
             {isLightboxZoomed ? '适合窗口' : '100%'}
-          </button>
-          <button type="button" onclick={closeLightbox}>关闭</button>
+          </Button>
+          <Button variant="outline" size="sm" onclick={closeLightbox}>关闭</Button>
         </div>
       </div>
 
@@ -745,9 +750,9 @@
           <span>ISO {selectedPhoto.iso}</span>
         </div>
         <div class="lightbox-decisions">
-          <button type="button" class="keep" onclick={() => void setDecision('keep')}>保留 · {shortcutLabel('keep')}</button>
-          <button type="button" class="cull" onclick={() => void setDecision('cull')}>淘汰 · {shortcutLabel('cull')}</button>
-          <button type="button" onclick={() => void setDecision(null)}>待定 · {shortcutLabel('skip')}</button>
+          <Button class="keep" size="sm" onclick={() => void setDecision('keep')}>保留 · {shortcutLabel('keep')}</Button>
+          <Button class="cull" variant="destructive" size="sm" onclick={() => void setDecision('cull')}>淘汰 · {shortcutLabel('cull')}</Button>
+          <Button variant="outline" size="sm" onclick={() => void setDecision(null)}>待定 · {shortcutLabel('skip')}</Button>
         </div>
       </div>
     </div>
@@ -777,7 +782,7 @@
     flex: 1;
     border-radius: 5px;
     background: transparent;
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     font-weight: 700;
     padding: 7px 8px;
@@ -812,7 +817,7 @@
   }
 
   .meta-row {
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     padding: 3px 0;
   }
@@ -914,15 +919,15 @@
     padding: 2px;
   }
 
-  .filter-group button {
+  :global(.filter-group [data-slot="button"]) {
     border-radius: 4px;
     background: transparent;
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     padding: 5px 10px;
   }
 
-  .filter-group button.active {
+  :global(.filter-group [data-slot="button"].active) {
     background: var(--surface-warm);
     color: var(--fg);
   }
@@ -943,7 +948,7 @@
     padding: 2px;
   }
 
-  .batch-actions button {
+  :global(.batch-actions [data-slot="button"]) {
     border-radius: 4px;
     background: transparent;
     color: var(--accent);
@@ -953,15 +958,11 @@
     white-space: nowrap;
   }
 
-  .batch-actions button:hover {
+  :global(.batch-actions [data-slot="button"]:hover) {
     background: var(--surface-warm);
   }
 
-  .batch-actions button.danger {
-    color: var(--danger);
-  }
-
-  .batch-actions button:disabled {
+  :global(.batch-actions [data-slot="button"]:disabled) {
     cursor: wait;
     opacity: 0.52;
   }
@@ -988,7 +989,7 @@
     border-left: 2px solid var(--accent);
     border-radius: 0 6px 6px 0;
     background: var(--surface);
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     line-height: 1.5;
     padding: 10px 12px;
@@ -999,7 +1000,7 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--surface);
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     line-height: 1.5;
     padding: 10px 12px;
@@ -1009,7 +1010,7 @@
     min-width: 0;
   }
 
-  .export-note button {
+  :global(.export-note [data-slot="button"]) {
     flex: 0 0 auto;
     border: 1px solid var(--border);
     border-radius: 5px;
@@ -1020,19 +1021,13 @@
     padding: 6px 10px;
   }
 
-  .progress-bar {
+  :global(.progress-bar) {
     position: relative;
     flex: 1;
     height: 4px;
     overflow: hidden;
     border-radius: 2px;
     background: var(--border);
-  }
-
-  .progress-bar span {
-    position: absolute;
-    inset: 0 auto 0 0;
-    background: var(--accent);
   }
 
   .progress-stats {
@@ -1084,7 +1079,7 @@
     padding: 12px;
   }
 
-  .load-more button {
+  :global(.load-more [data-slot="button"]) {
     border: 1px solid var(--border);
     border-radius: 5px;
     background: var(--bg);
@@ -1094,7 +1089,7 @@
     padding: 6px 10px;
   }
 
-  .load-more button:hover {
+  :global(.load-more [data-slot="button"]:hover) {
     background: var(--surface-warm);
   }
 
@@ -1149,8 +1144,8 @@
     gap: 8px;
   }
 
-  .lightbox-actions button,
-  .lightbox-decisions button {
+  :global(.lightbox-actions [data-slot="button"]),
+  :global(.lightbox-decisions [data-slot="button"]) {
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 5px;
     background: rgba(250, 249, 245, 0.08);
@@ -1160,22 +1155,22 @@
     padding: 7px 10px;
   }
 
-  .lightbox-actions button:hover,
-  .lightbox-decisions button:hover {
+  :global(.lightbox-actions [data-slot="button"]:hover),
+  :global(.lightbox-decisions [data-slot="button"]:hover) {
     background: rgba(250, 249, 245, 0.14);
   }
 
-  .lightbox-actions button:disabled {
+  :global(.lightbox-actions [data-slot="button"]:disabled) {
     cursor: default;
     opacity: 0.42;
   }
 
-  .lightbox-decisions .keep {
+  :global(.lightbox-decisions .keep) {
     border-color: color-mix(in srgb, var(--success) 70%, transparent);
     background: color-mix(in srgb, var(--success) 78%, transparent);
   }
 
-  .lightbox-decisions .cull {
+  :global(.lightbox-decisions .cull) {
     border-color: color-mix(in srgb, var(--danger) 70%, transparent);
     background: color-mix(in srgb, var(--danger) 78%, transparent);
   }
@@ -1227,7 +1222,7 @@
     border: 1px dashed var(--border);
     border-radius: 8px;
     background: var(--surface);
-    color: var(--muted);
+    color: var(--muted-foreground);
     text-align: center;
   }
 

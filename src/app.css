@@ -7,18 +7,18 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --bg: #f5f4ed;
-  --surface: #faf9f5;
-  --surface-warm: #e8e6dc;
-  --fg: #141413;
-  --fg-2: #3d3d3a;
+  --bg: var(--background);
+  --surface: var(--card);
+  --surface-warm: var(--secondary);
+  --fg: var(--foreground);
+  --fg-2: var(--secondary-foreground);
   --muted: oklch(0.967 0.001 286.375);
-  --meta: #6b6a64;
+  --meta: var(--muted-foreground);
   --border: oklch(0.92 0.004 286.32);
-  --border-soft: #e5e3d8;
-  --accent: oklch(0.555 0.163 48.998);
-  --accent-on: #faf9f5;
-  --accent-light: #2d5a8a;
+  --border-soft: color-mix(in oklch, var(--border) 72%, var(--background));
+  --accent: var(--primary);
+  --accent-on: var(--primary-foreground);
+  --accent-light: color-mix(in oklch, var(--primary) 84%, white);
   --success: #4a6b3a;
   --warn: #8a6b1f;
   --danger: #8a3a30;
@@ -561,7 +561,7 @@ a {
 .page-lede,
 .section-lede,
 .muted {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .page-lede {

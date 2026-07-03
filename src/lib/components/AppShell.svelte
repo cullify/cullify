@@ -2,6 +2,9 @@
   import { resolve } from '$app/paths';
   import { onMount } from 'svelte';
   import { tryLoadSystemResourceSnapshot, type SystemResourceSnapshot } from '$lib/backend';
+  import { Button } from '$lib/components/ui/button';
+  import { Badge } from '$lib/components/ui/badge';
+  import * as Card from '$lib/components/ui/card';
   import type { Snippet } from 'svelte';
   import type { ShellController } from '$lib/shell.svelte';
   import type { AppRoute } from '$lib/types';
@@ -137,8 +140,10 @@
     role="presentation"
     onpointerdown={startTitlebarDrag}
   >
-    <button
+    <Button
       type="button"
+      variant="outline"
+      size="icon-sm"
       class="sidebar-toggle"
       aria-label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
       aria-pressed={!sidebarCollapsed}
@@ -150,7 +155,7 @@
         <span></span>
         <span></span>
       </span>
-    </button>
+    </Button>
     <div class="titlebar-copy">
       <strong>{shell.title}</strong>
       <span>{shell.subtitle}</span>
@@ -167,12 +172,16 @@
       <div class="nav-section">
         <p class="nav-eyebrow">工作区</p>
         {#each navItems as item (item.id)}
-          <a class={['nav-item', shell.active === item.id && 'active'].filter(Boolean).join(' ')} href={resolve(item.href)}>
+          <Button
+            class={['nav-item', shell.active === item.id && 'active'].filter(Boolean).join(' ')}
+            href={resolve(item.href)}
+            variant={shell.active === item.id ? 'secondary' : 'ghost'}
+          >
             <span>{item.label}</span>
             {#if item.count}
               <span class="nav-count">{item.count()}</span>
             {/if}
-          </a>
+          </Button>
         {/each}
       </div>
 
@@ -185,10 +194,10 @@
           <p class="nav-eyebrow">最近项目</p>
           {#if shell.recentProjects.length}
             {#each shell.recentProjects.slice(0, 3) as project (project.id)}
-              <a class="nav-item" href={resolve('/cull')}>
+              <Button class="nav-item" href={resolve('/cull')} variant="ghost">
                 <span>{project.shortName}</span>
-                <span class="nav-count">{project.total}</span>
-              </a>
+                <Badge variant="outline" class="nav-count">{project.total}</Badge>
+              </Button>
             {/each}
           {:else}
             <div class="nav-empty">暂无项目</div>
@@ -198,10 +207,10 @@
         <div class="nav-spacer"></div>
 
         <p class="nav-eyebrow">推理引擎</p>
-        <div class="model-card">
+        <Card.Root class="model-card" size="sm">
           <div class="model-row">
             <span class="model-name">快速模式</span>
-            <span class="model-dot" title="可用"></span>
+            <Badge variant="secondary" class="model-dot" title="可用">ON</Badge>
           </div>
           <div class="model-meta">
             <span>Rust 原生分析</span>
@@ -211,7 +220,7 @@
             <span>模糊 · 曝光 · pHash</span>
             <span>本地</span>
           </div>
-        </div>
+        </Card.Root>
       {/if}
     </div>
     <button
