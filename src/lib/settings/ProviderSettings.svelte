@@ -123,6 +123,9 @@
     <h2>模型供应商</h2>
     <span>{activeProvider} / {activeModelId}</span>
   </div>
+  <p class="provider-intro">
+    本地模型直接下载到设备；第三方供应商只维护 API Host、Key 和默认模型。
+  </p>
 
   <div class="provider-workspace">
     <aside class="provider-directory" aria-label="模型供应商列表">
@@ -235,7 +238,7 @@
           <h3>{activeProviderName}</h3>
           <p>
             {activeProvider === 'llama.cpp'
-              ? '由 llama.cpp 驱动 · 从 Hugging Face 下载 GGUF 视觉模型'
+              ? '由 llama.cpp 驱动 · 下载来源由 Hugging Face 提供'
               : activeProviderConfig
                 ? providerStatusText(activeProviderConfig)
                 : '未选择供应商'}
@@ -322,9 +325,17 @@
     font-size: 12px;
   }
 
+  .provider-intro {
+    max-width: 68ch;
+    margin: -8px 0 18px;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.65;
+  }
+
   .provider-workspace {
     display: grid;
-    grid-template-columns: 300px minmax(0, 1fr);
+    grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
     min-height: 560px;
     overflow: hidden;
     border: 1px solid var(--border);
@@ -501,7 +512,7 @@
     gap: 18px;
     min-width: 0;
     background: var(--card);
-    padding: 22px 26px 28px;
+    padding: 24px 28px 30px;
   }
 
   .provider-panel-head {

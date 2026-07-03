@@ -325,11 +325,17 @@ struct HuggingFaceSibling {
 }
 
 #[tauri::command]
-pub fn list_huggingface_vision_models(
+pub async fn list_huggingface_vision_models(
     request: HuggingFaceCatalogRequest,
     state: State<'_, AppState>,
 ) -> Result<HuggingFaceCatalogPage, String> {
-    list_huggingface_vision_models_inner(&state.app_data_dir, request).map_err(Into::into)
+    let app_data_dir = state.app_data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        list_huggingface_vision_models_inner(&app_data_dir, request)
+    })
+    .await
+    .map_err(|error| format!("model catalog task failed: {error}"))?
+    .map_err(Into::into)
 }
 
 pub fn start_huggingface_catalog_refresh(app_data_dir: PathBuf) {
@@ -387,6 +393,8 @@ fn download_model_inner(
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("Cullify/0.1 model downloader")
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60))
         .build()?;
     let resume_from = partial_download_size(&temp_path)?;
     let mut response = send_model_download_request(&client, download_url, resume_from)?;
@@ -624,6 +632,8 @@ fn refresh_huggingface_catalog_if_needed(app_data_dir: &Path) -> AppResult<()> {
 fn fetch_huggingface_vision_models() -> AppResult<Vec<HuggingFaceVisionModel>> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("Cullify/0.1 model catalog")
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(20))
         .build()?;
     let endpoints = [
         "https://huggingface.co/api/models?filter=image-text-to-text&full=true&sort=downloads&direction=-1&limit=200",

@@ -4,8 +4,11 @@
   import * as Card from '$lib/components/ui/card';
   import { Input } from '$lib/components/ui/input';
   import { Progress } from '$lib/components/ui/progress';
+  import CheckCircle2Icon from '@lucide/svelte/icons/check-circle-2';
   import DownloadIcon from '@lucide/svelte/icons/download';
   import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+  import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
+  import XIcon from '@lucide/svelte/icons/x';
   import type { CatalogStatus } from '$lib/settings/modelHelpers';
   import { modelMetaText, modelSourceText } from '$lib/settings/modelHelpers';
 
@@ -79,14 +82,17 @@
 
 <div id="models" class="model-library">
   <div class="model-library-title">
-    <h4>模型库</h4>
+    <div>
+      <h4>Hugging Face 模型库</h4>
+      <p>仅展示适合视觉任务的 GGUF 模型；下载后由本地 llama.cpp 使用。</p>
+    </div>
     <span>
       {#if isCatalogRefreshing && !modelCatalog.length}
         读取中
       {:else if modelCatalogStatus === 'fallback'}
         本地列表
       {:else}
-        {visibleCatalogModels.length} / {modelCatalogTotal} · {modelCatalogCacheDate}
+        {visibleCatalogModels.length} / {modelCatalogTotal} · 缓存 {modelCatalogCacheDate}
       {/if}
     </span>
   </div>
@@ -104,7 +110,7 @@
     </Button>
   </div>
 
-  <div class="hf-model-table" role="list" aria-label="Hugging Face 视觉模型">
+  <div class="hf-model-list" role="list" aria-label="Hugging Face 视觉模型">
     {#each visibleCatalogModels as model (model.id)}
       {@const progress = progressForModel(model.id)}
       {@const partialBytes = resumableBytes(model)}
@@ -118,11 +124,24 @@
           <span class="hf-model-copy">
             <strong>{model.name}</strong>
             <small>{modelSourceText(model)}</small>
-            <em>{modelMetaText(model)}</em>
+            <span class="model-chips" aria-label="模型信息">
+              <em>{model.task}</em>
+              <em>{modelMetaText(model)}</em>
+            </span>
           </span>
         </div>
         <span class="hf-model-action">
-          <small>{modelStatusText(model, partialBytes)}</small>
+          <small
+            class={[
+              'model-state',
+              model.downloaded && !model.updateAvailable && 'done',
+              model.updateAvailable && 'update',
+              partialBytes > 0 && 'resume',
+              downloadingModelId === model.id && 'busy'
+            ].filter(Boolean).join(' ')}
+          >
+            {modelStatusText(model, partialBytes)}
+          </small>
           <Button
             size="sm"
             variant={downloadingModelId === model.id ? 'destructive' : model.downloaded && !model.updateAvailable ? 'secondary' : 'outline'}
@@ -135,7 +154,13 @@
             disabled={modelActionDisabled(model)}
             onclick={() => (downloadingModelId === model.id ? cancelActiveModelDownload(model.id) : downloadCatalogModel(model))}
           >
-            {#if downloadingModelId !== model.id && (!model.downloaded || model.updateAvailable)}
+            {#if downloadingModelId === model.id}
+              <XIcon data-icon="inline-start" aria-hidden="true" />
+            {:else if model.downloaded && !model.updateAvailable}
+              <CheckCircle2Icon data-icon="inline-start" aria-hidden="true" />
+            {:else if partialBytes > 0 || model.updateAvailable}
+              <RotateCcwIcon data-icon="inline-start" aria-hidden="true" />
+            {:else}
               <DownloadIcon data-icon="inline-start" aria-hidden="true" />
             {/if}
             {progressButtonLabel(model, progress)}
@@ -203,9 +228,13 @@
 
   .model-library-title {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
+  }
+
+  .model-library-title > div {
+    min-width: 0;
   }
 
   .model-library-title h4 {
@@ -215,7 +244,15 @@
     font-weight: 800;
   }
 
+  .model-library-title p {
+    margin: 5px 0 0;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
   .model-library-title span {
+    flex: 0 0 auto;
     color: var(--muted-foreground);
     font-family: var(--font-mono);
     font-size: 11px;
@@ -234,21 +271,21 @@
     padding: 10px 14px;
   }
 
-  .hf-model-table {
+  .hf-model-list {
     display: grid;
     gap: 8px;
   }
 
   :global(.hf-model-row) {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 140px;
-    align-items: center;
-    gap: 18px;
-    min-height: 82px;
+    grid-template-columns: minmax(0, 1fr) minmax(138px, auto);
+    align-items: stretch;
+    gap: 14px;
+    min-height: 88px;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--card);
-    padding: 12px 14px;
+    padding: 12px;
   }
 
   :global(.hf-model-row:hover),
@@ -263,8 +300,8 @@
 
   .hf-model-name {
     display: grid;
-    grid-template-columns: 34px minmax(0, 1fr);
-    align-items: center;
+    grid-template-columns: 36px minmax(0, 1fr);
+    align-items: start;
     gap: 12px;
     min-width: 0;
   }
@@ -272,8 +309,9 @@
   .model-icon {
     display: grid;
     place-items: center;
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    height: 36px;
+    margin-top: 2px;
     flex: 0 0 auto;
     border-radius: 50%;
     background: color-mix(in oklch, var(--primary) 12%, var(--card));
@@ -285,8 +323,7 @@
   }
 
   .hf-model-name strong,
-  .hf-model-name small,
-  .hf-model-copy em {
+  .hf-model-name small {
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -303,36 +340,72 @@
     min-width: 0;
   }
 
-  .hf-model-name small,
-  .hf-model-copy em {
+  .hf-model-name small {
     color: var(--muted-foreground);
     font-family: var(--font-mono);
     font-size: 10px;
   }
 
-  .hf-model-copy em {
-    margin-top: 3px;
+  .model-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 8px;
+  }
+
+  .model-chips em {
+    max-width: 100%;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 999px;
     color: var(--meta);
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-style: normal;
+    line-height: 1;
+    padding: 4px 7px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .hf-model-action {
     display: grid;
+    align-content: center;
     justify-items: end;
-    gap: 7px;
+    gap: 8px;
     min-width: 0;
   }
 
-  .hf-model-action small {
-    max-width: 140px;
+  .model-state {
+    max-width: 170px;
     overflow: hidden;
-    color: var(--fg-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted-foreground);
     font-family: var(--font-mono);
     font-size: 10px;
+    font-weight: 700;
     line-height: 1.2;
+    padding: 4px 8px;
     text-align: right;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .model-state.done {
+    border-color: color-mix(in oklch, var(--success) 45%, var(--border));
+    color: var(--success);
+  }
+
+  .model-state.update,
+  .model-state.resume {
+    border-color: color-mix(in oklch, var(--warn) 42%, var(--border));
+    color: var(--warn);
+  }
+
+  .model-state.busy {
+    border-color: color-mix(in oklch, var(--primary) 40%, var(--border));
+    color: var(--primary);
   }
 
   :global(.download-progress-track) {
@@ -374,15 +447,16 @@
 
   :global(.model-action) {
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     background: transparent;
     color: var(--accent);
     font-family: var(--font-mono);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
-    padding: 5px 10px;
+    min-width: 92px;
+    padding: 7px 10px;
     text-transform: uppercase;
-    white-space: pre-line;
+    white-space: nowrap;
   }
 
   :global(.model-action:disabled) {
@@ -440,6 +514,10 @@
 
     .model-catalog-toolbar {
       grid-template-columns: 1fr;
+    }
+
+    .model-library-title {
+      flex-direction: column;
     }
   }
 </style>
