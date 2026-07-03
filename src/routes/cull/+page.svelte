@@ -8,6 +8,9 @@
   import { Button } from '$lib/components/ui/button';
   import { Progress } from '$lib/components/ui/progress';
   import { describeExportError } from '$lib/exportMessages';
+  import DownloadIcon from '@lucide/svelte/icons/download';
+  import Maximize2Icon from '@lucide/svelte/icons/maximize-2';
+  import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
   import {
     backendPhotoToPhoto,
     backendProjectToProject,
@@ -594,14 +597,15 @@
   <p class="nav-eyebrow group-title">连拍组</p>
   <div class="group-list">
     {#each sidebarGroups as group (group.id)}
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
         class={['group-item', activeGroup === group.id && 'active'].filter(Boolean).join(' ')}
         onclick={() => chooseGroup(group.id)}
       >
         <span>{group.name}</span>
         <span>{group.count}</span>
-      </button>
+      </Button>
     {/each}
   </div>
 {/snippet}
@@ -627,9 +631,11 @@
             {/each}
           </div>
           <Button class="sort-button" variant="outline" size="sm" onclick={cycleSortMode}>
+            <SlidersHorizontalIcon data-icon="inline-start" aria-hidden="true" />
             排序 · {activeSortLabel}
           </Button>
           <Button variant="outline" size="sm" onclick={openLightbox} disabled={!selectedPhoto}>
+            <Maximize2Icon data-icon="inline-start" aria-hidden="true" />
             灯箱 · {shortcutLabel('fullscreen')}
           </Button>
           <div class="batch-actions" aria-label="批量标记当前筛选照片">
@@ -644,6 +650,7 @@
             </Button>
           </div>
           <Button class="export-button" variant="ghost" size="sm" onclick={() => void exportCurrentProject()} disabled={isExporting || isBatchUpdating}>
+            <DownloadIcon data-icon="inline-start" aria-hidden="true" />
             {isExporting ? '导出中' : '导出'}
           </Button>
         </div>
@@ -837,7 +844,7 @@
     gap: 2px;
   }
 
-  .group-item {
+  :global(.group-item) {
     display: flex;
     justify-content: space-between;
     width: 100%;
@@ -849,13 +856,13 @@
     text-align: left;
   }
 
-  .group-item:hover,
-  .group-item.active {
+  :global(.group-item:hover),
+  :global(.group-item.active) {
     background: var(--tag-bg-soft);
     color: var(--accent);
   }
 
-  .group-item span:last-child {
+  :global(.group-item span:last-child) {
     color: var(--meta);
     font-family: var(--font-mono);
     font-size: 10px;
@@ -895,7 +902,7 @@
     justify-content: flex-end;
   }
 
-  .toolbar-right button {
+  :global(.toolbar-right [data-slot="button"]) {
     flex: 0 0 auto;
     white-space: nowrap;
   }
@@ -1006,7 +1013,7 @@
     padding: 10px 12px;
   }
 
-  .export-note span {
+  :global(.export-note [data-slot="alert-description"]) {
     min-width: 0;
   }
 

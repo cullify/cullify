@@ -27,6 +27,13 @@
   import { Switch } from '$lib/components/ui/switch';
   import * as Table from '$lib/components/ui/table';
   import { getShellContext } from '$lib/shell.svelte';
+  import DownloadIcon from '@lucide/svelte/icons/download';
+  import PlusIcon from '@lucide/svelte/icons/plus';
+  import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+  import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
+  import SaveIcon from '@lucide/svelte/icons/save';
+  import Trash2Icon from '@lucide/svelte/icons/trash-2';
+  import XIcon from '@lucide/svelte/icons/x';
   import type { Shortcut } from '$lib/types';
 
   let activeProvider = $state(defaultAppConfig.activeModelProviderId);
@@ -830,13 +837,19 @@
                   <Input type="password" bind:value={newProviderApiKey} placeholder="可选" />
                 </label>
                 <div class="draft-actions">
-                  <Button variant="outline" onclick={() => { showProviderDraft = false; resetProviderDraft(); }}>取消</Button>
-                  <Button onclick={addProvider}>添加</Button>
+                  <Button variant="outline" onclick={() => { showProviderDraft = false; resetProviderDraft(); }}>
+                    <XIcon data-icon="inline-start" aria-hidden="true" />
+                    取消
+                  </Button>
+                  <Button onclick={addProvider}>
+                    <PlusIcon data-icon="inline-start" aria-hidden="true" />
+                    添加
+                  </Button>
                 </div>
               </div>
             {:else}
               <Button variant="outline" class="provider-add-button" onclick={() => (showProviderDraft = true)}>
-                <span>+</span>
+                <PlusIcon data-icon="inline-start" aria-hidden="true" />
                 添加供应商
               </Button>
             {/if}
@@ -855,7 +868,10 @@
                     checked={activeProviderConfig.enabled}
                     onclick={() => toggleProvider(activeProviderConfig.id)}
                   />
-                  <Button variant="destructive" size="sm" onclick={() => removeProvider(activeProviderConfig.id)}>删除</Button>
+                  <Button variant="destructive" size="sm" onclick={() => removeProvider(activeProviderConfig.id)}>
+                    <Trash2Icon data-icon="inline-start" aria-hidden="true" />
+                    删除
+                  </Button>
                 </div>
               {/if}
             </div>
@@ -893,6 +909,7 @@
                 <div class="model-catalog-toolbar">
                   <Input bind:value={modelCatalogSearch} placeholder="搜索 Hugging Face 视觉模型" aria-label="搜索 Hugging Face 视觉模型" />
                   <Button variant="outline" size="sm" disabled={isCatalogRefreshing} onclick={() => void loadHuggingFaceCatalog(true)}>
+                    <RefreshCwIcon data-icon="inline-start" aria-hidden="true" />
                     {isCatalogRefreshing ? '刷新中' : '刷新缓存'}
                   </Button>
                 </div>
@@ -925,6 +942,9 @@
                           onclick={() =>
                             void (downloadingModelId === model.id ? cancelActiveModelDownload(model.id) : downloadCatalogModel(model))}
                         >
+                          {#if downloadingModelId !== model.id && (!model.downloaded || model.updateAvailable)}
+                            <DownloadIcon data-icon="inline-start" aria-hidden="true" />
+                          {/if}
                           {progressButtonLabel(model, progress)}
                         </Button>
                         {#if progress}
@@ -1141,8 +1161,12 @@
         {/if}
       </div>
       <div class="save-actions">
-        <Button variant="outline" onclick={() => void loadSavedConfig()} disabled={isSavingConfig}>放弃改动</Button>
+        <Button variant="outline" onclick={() => void loadSavedConfig()} disabled={isSavingConfig}>
+          <RotateCcwIcon data-icon="inline-start" aria-hidden="true" />
+          放弃改动
+        </Button>
         <Button onclick={() => void saveChanges()} disabled={isSavingConfig}>
+          <SaveIcon data-icon="inline-start" aria-hidden="true" />
           {isSavingConfig ? '保存中' : '保存到 config.toml'}
         </Button>
       </div>
@@ -1260,12 +1284,12 @@
 
   :global(.provider-list-item:hover),
   :global(.provider-list-item.active) {
-    border-color: #d7e9df;
+    border-color: color-mix(in oklch, var(--success) 32%, var(--border));
     background: var(--card);
   }
 
   :global(.provider-list-item.active) {
-    box-shadow: 0 8px 18px rgba(20, 20, 19, 0.055);
+    box-shadow: var(--shadow-soft);
   }
 
   .provider-avatar,
@@ -1277,7 +1301,7 @@
     flex: 0 0 auto;
     border-radius: 50%;
     background: color-mix(in oklch, var(--primary) 12%, var(--card));
-    color: #295b92;
+    color: var(--primary);
     font-family: var(--font-mono);
     font-size: 11px;
     font-weight: 700;
@@ -1286,7 +1310,7 @@
 
   .provider-avatar.local {
     background: color-mix(in oklch, var(--success) 13%, var(--card));
-    color: #167246;
+    color: var(--success);
   }
 
   .provider-list-copy {
@@ -1308,7 +1332,7 @@
   :global(.remote-model-row small) {
     display: block;
     overflow: hidden;
-    color: #8b8a84;
+    color: var(--muted-foreground);
     font-family: var(--font-mono);
     font-size: 10px;
     text-overflow: ellipsis;
@@ -1320,7 +1344,7 @@
     border: 1px solid var(--border);
     border-radius: 999px;
     background: var(--secondary);
-    color: #7a7770;
+    color: var(--muted-foreground);
     font-family: var(--font-mono);
     font-size: 10px;
     padding: 3px 8px;
@@ -1331,7 +1355,7 @@
   :global(.model-state.ready) {
     border-color: color-mix(in oklch, var(--success) 45%, var(--border));
     background: color-mix(in oklch, var(--success) 13%, var(--card));
-    color: #167246;
+    color: var(--success);
   }
 
   :global(.provider-add-button) {
@@ -1347,18 +1371,13 @@
     font-weight: 700;
   }
 
-  :global(.provider-add-button span) {
-    font-size: 20px;
-    line-height: 1;
-  }
-
   .provider-workspace :global([data-slot="button"]:focus) {
     outline: none;
   }
 
   .provider-workspace :global([data-slot="button"]:focus-visible),
   .provider-workspace :global(input:focus-visible) {
-    outline: 2px solid rgba(16, 185, 129, 0.28);
+    outline: 2px solid color-mix(in oklch, var(--success) 28%, transparent);
     outline-offset: 2px;
   }
 
@@ -1414,7 +1433,7 @@
 
   .provider-panel-head p {
     margin: 0;
-    color: #8b8a84;
+    color: var(--muted-foreground);
     font-size: 12px;
     overflow-wrap: anywhere;
   }
@@ -1485,7 +1504,7 @@
   }
 
   .model-library-title span {
-    color: #8b8a84;
+    color: var(--muted-foreground);
     font-family: var(--font-mono);
     font-size: 11px;
   }
@@ -1527,7 +1546,7 @@
   }
 
   :global(.hf-model-row.active) {
-    box-shadow: inset 3px 0 0 var(--success), 0 8px 18px rgba(20, 20, 19, 0.045);
+    box-shadow: inset 3px 0 0 var(--success), var(--shadow-soft);
   }
 
   .hf-model-name {
@@ -1556,7 +1575,7 @@
   .hf-model-copy em {
     display: block;
     overflow: hidden;
-    color: #8b8a84;
+    color: var(--muted-foreground);
     font-family: var(--font-mono);
     font-size: 10px;
     text-overflow: ellipsis;
@@ -1565,7 +1584,7 @@
 
   .hf-model-copy em {
     margin-top: 3px;
-    color: #a09d96;
+    color: var(--meta);
     font-style: normal;
   }
 
@@ -1642,7 +1661,7 @@
   :global(.empty-provider) {
     display: grid;
     gap: 14px;
-    border: 1px solid #e1eee7;
+    border: 1px solid color-mix(in oklch, var(--success) 24%, var(--border));
     border-radius: 8px;
     background: color-mix(in oklch, var(--success) 6%, var(--card));
     padding: 16px;
@@ -1675,17 +1694,17 @@
   :global(.model-action.done) {
     border-color: color-mix(in oklch, var(--success) 45%, var(--border));
     background: color-mix(in oklch, var(--success) 13%, var(--card));
-    color: #167246;
+    color: var(--success);
   }
 
   :global(.model-action.update) {
-    border-color: #f0d292;
+    border-color: color-mix(in oklch, var(--warn) 42%, var(--border));
     background: color-mix(in oklch, var(--warn) 12%, var(--card));
-    color: #8a5a00;
+    color: var(--warn);
   }
 
   :global(.model-action.cancel) {
-    border-color: #f1b8b0;
+    border-color: color-mix(in oklch, var(--danger) 38%, var(--border));
     background: color-mix(in oklch, var(--danger) 10%, var(--card));
     color: var(--danger);
   }

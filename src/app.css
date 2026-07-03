@@ -128,6 +128,10 @@ a {
   background: color-mix(in srgb, var(--surface) 94%, var(--bg));
   padding: 0 138px 0 12px;
   user-select: none;
+  -webkit-app-region: drag;
+}
+
+.titlebar :is(button, a, input, select, textarea, [role="button"]) {
   -webkit-app-region: no-drag;
 }
 
@@ -658,7 +662,7 @@ a {
 }
 
 .tag-arena {
-  background: #d6e1ee;
+  background: color-mix(in oklch, var(--primary) 13%, var(--card));
   color: var(--accent);
 }
 

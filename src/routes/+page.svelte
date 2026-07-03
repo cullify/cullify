@@ -17,6 +17,10 @@
   import * as Card from '$lib/components/ui/card';
   import { Kbd } from '$lib/components/ui/kbd';
   import { getShellContext } from '$lib/shell.svelte';
+  import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
+  import PencilIcon from '@lucide/svelte/icons/pencil';
+  import PlusIcon from '@lucide/svelte/icons/plus';
+  import Trash2Icon from '@lucide/svelte/icons/trash-2';
   import type { CullMode, Project, Shortcut } from '$lib/types';
 
   type ModeCard = {
@@ -269,9 +273,11 @@
         </div>
         <div class="actions">
           <Button variant="outline" onclick={() => createFromFolder('quick')} disabled={isCreating}>
+            <FolderOpenIcon data-icon="inline-start" aria-hidden="true" />
             打开文件夹
           </Button>
           <Button onclick={() => createFromFolder('quick')} disabled={isCreating}>
+            <PlusIcon data-icon="inline-start" aria-hidden="true" />
             {isCreating ? '扫描中' : '新建项目'}
           </Button>
         </div>
@@ -360,9 +366,11 @@
                 <span class="col project-state"><span class={statusClass(project.status)}>{project.statusLabel}</span></span>
                 <span class="project-actions">
                   <Button variant="outline" size="sm" onclick={() => renameExistingProject(project)} disabled={isCreating}>
+                    <PencilIcon data-icon="inline-start" aria-hidden="true" />
                     重命名
                   </Button>
                   <Button variant="destructive" size="sm" onclick={() => deleteExistingProject(project)} disabled={isCreating}>
+                    <Trash2Icon data-icon="inline-start" aria-hidden="true" />
                     删除
                   </Button>
                 </span>
@@ -374,6 +382,7 @@
             <strong>还没有本地项目</strong>
             <span>点击“新建项目”选择照片文件夹，Cullify 会在本机扫描、评分并生成可导出的选片项目。</span>
             <Button variant="outline" onclick={() => createFromFolder('quick')} disabled={isCreating}>
+              <FolderOpenIcon data-icon="inline-start" aria-hidden="true" />
               选择照片文件夹
             </Button>
           </Card.Root>
