@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { Button } from '$lib/components/ui/button';
+  import { Kbd } from '$lib/components/ui/kbd';
+  import { Progress } from '$lib/components/ui/progress';
+  import * as Card from '$lib/components/ui/card';
   import type { Decision, Photo } from '$lib/types';
 
   type ShortcutBinding = { id: string; keys: string[] };
@@ -32,6 +36,12 @@
     { label: '撤销', keys: keysFor('undo'), separator: '+' },
     { label: '全要 / 全不要', keys: keysFor('all'), separator: '/' }
   ]);
+  const scoreRows = $derived.by(() => [
+    { label: '清晰度', percent: photo.clarity * 100, value: photo.clarity.toFixed(2) },
+    { label: '曝光', percent: photo.exposure * 100, value: photo.exposure.toFixed(2) },
+    { label: '构图', percent: photo.composition * 100, value: photo.composition.toFixed(2) },
+    { label: '人脸', percent: photo.score > 70 ? 92 : 54, value: photo.faceScore }
+  ]);
 
   function keysFor(id: string) {
     return shortcuts.find((shortcut) => shortcut.id === id)?.keys ?? fallbackShortcuts[id] ?? [];
@@ -57,7 +67,7 @@
   }
 </script>
 
-<section class="inspector-panel">
+<Card.Root class="inspector-panel">
   <div class="photo-strip">
     <div class="preview" style:background={photo.palette}>
       {#if photo.sourceUrl}
@@ -84,26 +94,13 @@
   <div class="score-panel">
     <div class="score-num">{photo.score}<small>/100</small></div>
     <div class="score-bars">
-      <div class="score-bar">
-        <span class="lbl">清晰度</span>
-        <div class="track"><div class="fill" style:width={`${photo.clarity * 100}%`}></div></div>
-        <span class="v">{photo.clarity.toFixed(2)}</span>
-      </div>
-      <div class="score-bar">
-        <span class="lbl">曝光</span>
-        <div class="track"><div class="fill" style:width={`${photo.exposure * 100}%`}></div></div>
-        <span class="v">{photo.exposure.toFixed(2)}</span>
-      </div>
-      <div class="score-bar">
-        <span class="lbl">构图</span>
-        <div class="track"><div class="fill" style:width={`${photo.composition * 100}%`}></div></div>
-        <span class="v">{photo.composition.toFixed(2)}</span>
-      </div>
-      <div class="score-bar">
-        <span class="lbl">人脸</span>
-        <div class="track"><div class="fill" style:width={photo.score > 70 ? '92%' : '54%'}></div></div>
-        <span class="v">{photo.faceScore}</span>
-      </div>
+      {#each scoreRows as row (row.label)}
+        <div class="score-bar">
+          <span class="lbl">{row.label}</span>
+          <Progress class="track" value={row.percent} />
+          <span class="v">{row.value}</span>
+        </div>
+      {/each}
     </div>
   </div>
 
@@ -114,9 +111,9 @@
 
   <div class="action-panel">
     <div class="decisions">
-      <button type="button" class="dec-btn keep" onclick={() => onDecision('keep')}>保留<span>{shortcutLabel('keep')}</span></button>
-      <button type="button" class="dec-btn cull" onclick={() => onDecision('cull')}>淘汰<span>{shortcutLabel('cull')}</span></button>
-      <button type="button" class="dec-btn skip" onclick={() => onDecision(null)}>跳过<span>{shortcutLabel('skip')}</span></button>
+      <Button class="dec-btn keep" onclick={() => onDecision('keep')}>保留<span>{shortcutLabel('keep')}</span></Button>
+      <Button class="dec-btn cull" variant="destructive" onclick={() => onDecision('cull')}>淘汰<span>{shortcutLabel('cull')}</span></Button>
+      <Button class="dec-btn skip" variant="secondary" onclick={() => onDecision(null)}>跳过<span>{shortcutLabel('skip')}</span></Button>
     </div>
 
     <div class="kbd-hints">
@@ -126,17 +123,17 @@
           <span class="key-chord">
             {#each row.keys as key, keyIndex (`${row.label}-${key}-${keyIndex}`)}
               {#if keyIndex > 0}<span class="key-separator">{row.separator ?? '+'}</span>{/if}
-              <span class="kbd">{displayKey(key)}</span>
+              <Kbd class="kbd">{displayKey(key)}</Kbd>
             {/each}
           </span>
         </div>
       {/each}
     </div>
   </div>
-</section>
+</Card.Root>
 
 <style>
-  .inspector-panel {
+  :global(.inspector-panel) {
     display: grid;
     grid-template-columns: minmax(280px, 1.45fr) minmax(220px, 0.8fr) minmax(260px, 1fr) minmax(250px, 0.85fr);
     gap: 14px;
@@ -270,20 +267,12 @@
 
   .lbl {
     width: 48px;
-    color: var(--muted);
+    color: var(--muted-foreground);
   }
 
-  .track {
+  :global(.track) {
     flex: 1;
     height: 4px;
-    overflow: hidden;
-    border-radius: 2px;
-    background: var(--border);
-  }
-
-  .fill {
-    height: 100%;
-    background: var(--accent);
   }
 
   .v {
@@ -303,7 +292,7 @@
     border-left: 2px solid var(--accent);
     border-radius: 0 6px 6px 0;
     background: var(--bg);
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 13px;
     line-height: 1.6;
     margin: 0;
@@ -326,7 +315,7 @@
     gap: 6px;
   }
 
-  .dec-btn {
+  :global(.dec-btn) {
     border-radius: 6px;
     color: var(--accent-on);
     font-size: 12px;
@@ -334,7 +323,7 @@
     padding: 9px 8px;
   }
 
-  .dec-btn span {
+  :global(.dec-btn span) {
     display: block;
     margin-top: 3px;
     font-family: var(--font-mono);
@@ -342,15 +331,15 @@
     opacity: 0.7;
   }
 
-  .dec-btn.keep {
+  :global(.dec-btn.keep) {
     background: var(--success);
   }
 
-  .dec-btn.cull {
+  :global(.dec-btn.cull) {
     background: var(--danger);
   }
 
-  .dec-btn.skip {
+  :global(.dec-btn.skip) {
     background: var(--surface-warm);
     color: var(--fg-2);
     box-shadow: 0 0 0 1px var(--border);
@@ -385,13 +374,13 @@
   }
 
   @media (max-width: 1320px) {
-    .inspector-panel {
+    :global(.inspector-panel) {
       grid-template-columns: minmax(280px, 1.3fr) minmax(260px, 1fr);
     }
   }
 
   @media (max-width: 900px) {
-    .inspector-panel {
+    :global(.inspector-panel) {
       grid-template-columns: 1fr;
     }
 

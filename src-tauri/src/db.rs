@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -17,13 +16,6 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn open_default() -> AppResult<Self> {
-        let data_dir = app_data_dir()?;
-        fs::create_dir_all(&data_dir)?;
-        let path = data_dir.join("cullify.db");
-        Self::open(path)
-    }
-
     pub fn open(path: PathBuf) -> AppResult<Self> {
         let conn = Connection::open(&path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -427,11 +419,6 @@ fn repeat_placeholders(count: usize) -> String {
         .take(count)
         .collect::<Vec<_>>()
         .join(",")
-}
-
-pub fn app_data_dir() -> AppResult<PathBuf> {
-    let base = dirs::data_dir().ok_or(AppError::MissingDataDir)?;
-    Ok(base.join("com.cullify"))
 }
 
 fn map_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {

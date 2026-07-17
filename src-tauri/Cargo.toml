@@ -26,12 +26,13 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sysinfo = "0.33"
 toml = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
-dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff"] }
 kamadak-exif = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"

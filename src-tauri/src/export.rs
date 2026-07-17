@@ -9,7 +9,7 @@ use serde::Serialize;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    db::{Database, app_data_dir},
+    db::Database,
     error::{AppError, AppResult},
     models::{Photo, Project},
 };
@@ -45,8 +45,12 @@ struct ExportCounts {
     pending: usize,
 }
 
-pub fn export_project(db: &Database, project_id: &str) -> AppResult<ExportSummary> {
-    export_project_with_root(db, project_id, default_export_root()?)
+pub fn export_project(
+    db: &Database,
+    project_id: &str,
+    app_data_dir: &Path,
+) -> AppResult<ExportSummary> {
+    export_project_with_root(db, project_id, default_export_root(app_data_dir))
 }
 
 pub fn export_project_with_root(
@@ -165,8 +169,8 @@ fn write_zip(path: &Path, json: &str, csv: &str, photos: &[Photo]) -> AppResult<
     Ok(())
 }
 
-fn default_export_root() -> AppResult<PathBuf> {
-    Ok(app_data_dir()?.join("exports"))
+fn default_export_root(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("exports")
 }
 
 fn count_photos(photos: &[Photo]) -> ExportCounts {

@@ -201,5 +201,5 @@ export const shortcuts: Shortcut[] = [
   { id: 'fullscreen', action: '全屏灯箱', scenario: '通用', keys: ['F'] },
   { id: 'grid', action: '切换网格 / 列表', scenario: '挑选界面', keys: ['G'] },
   { id: 'undo', action: '撤销', scenario: '通用', keys: ['Cmd', 'Z'] },
-  { id: 'all', action: '全要 · 全不要', scenario: '竞技场', keys: ['Up', 'Down'] }
+  { id: 'all', action: '全要 · 全不要', scenario: '挑选界面', keys: ['Up', 'Down'] }
 ];

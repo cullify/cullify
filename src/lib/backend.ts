@@ -1,7 +1,8 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
-import type { Photo, Project, ProjectStatus, ProviderId } from './types';
+import type { Photo, Project, ProjectStatus } from './types';
 
 export interface BackendProject {
   id: string;
@@ -80,9 +81,34 @@ export interface ShortcutConfig {
   keys: string[];
 }
 
+export interface LocalModelConfig {
+  id: string;
+  name: string;
+  fileName: string;
+  size: string;
+  speed: string;
+  downloadUrl: string;
+  localPath: string | null;
+  downloaded: boolean;
+}
+
+export interface ThirdPartyProviderConfig {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  kind: string;
+  enabled: boolean;
+}
+
 export interface AppConfig {
-  providerId: ProviderId;
+  providerId: string;
   activeModelId: string;
+  activeModelProviderId: string;
+  activeLocalModelId: string;
+  localModels: LocalModelConfig[];
+  thirdPartyProviders: ThirdPartyProviderConfig[];
   blurThreshold: number;
   exposureTolerance: number;
   cullLine: number;
@@ -96,6 +122,68 @@ export interface AppConfig {
 export interface AppConfigEnvelope {
   config: AppConfig;
   configPath: string;
+  appDataDir: string;
+}
+
+export interface DownloadModelRequest {
+  modelId: string;
+  fileName: string;
+  downloadUrl: string;
+}
+
+export interface DownloadModelSummary {
+  modelId: string;
+  path: string;
+  bytes: number;
+}
+
+export interface ModelDownloadProgress {
+  modelId: string;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percent: number | null;
+}
+
+export interface HuggingFaceVisionModel {
+  id: string;
+  repoId: string;
+  name: string;
+  author: string;
+  task: string;
+  license: string;
+  fileName: string;
+  downloadUrl: string;
+  downloads: number;
+  likes: number;
+  lastModified: string;
+  downloaded: boolean;
+  updateAvailable: boolean;
+  localPath: string | null;
+  partialDownloadedBytes: number;
+  partialPath: string | null;
+}
+
+export interface HuggingFaceCatalogRequest {
+  offset: number;
+  limit: number;
+  refresh: boolean;
+}
+
+export interface HuggingFaceCatalogPage {
+  models: HuggingFaceVisionModel[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  cacheDate: string;
+  refreshed: boolean;
+}
+
+export interface SystemResourceSnapshot {
+  cpuUsage: number;
+  appMemoryBytes: number;
+  usedMemoryBytes: number;
+  totalMemoryBytes: number;
 }
 
 export interface ExportSummary {
@@ -112,6 +200,52 @@ export interface ExportSummary {
 export const defaultAppConfig: AppConfig = {
   providerId: 'builtin',
   activeModelId: 'gemma-3-4b',
+  activeModelProviderId: 'llama.cpp',
+  activeLocalModelId: 'gemma-3-4b',
+  localModels: [
+    {
+      id: 'gemma-3-4b',
+      name: 'Gemma 3 4B Vision',
+      fileName: 'gemma-3-4b-it-Q4_K_M.gguf',
+      size: '3.2 GB',
+      speed: '本地 · 快',
+      downloadUrl:
+        'https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf',
+      localPath: null,
+      downloaded: false
+    },
+    {
+      id: 'qwen-2-5-vl-7b',
+      name: 'Qwen2.5-VL 7B',
+      fileName: 'Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf',
+      size: '5.4 GB',
+      speed: '本地 · 均衡',
+      downloadUrl:
+        'https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf',
+      localPath: null,
+      downloaded: false
+    }
+  ],
+  thirdPartyProviders: [
+    {
+      id: 'ollama-local',
+      name: 'Ollama 本地服务',
+      baseUrl: 'http://localhost:11434/v1',
+      apiKey: '',
+      model: 'llava:latest',
+      kind: 'openai-compatible',
+      enabled: true
+    },
+    {
+      id: 'openai-compatible',
+      name: 'OpenAI 兼容端点',
+      baseUrl: 'http://localhost:1234/v1',
+      apiKey: '',
+      model: '',
+      kind: 'openai-compatible',
+      enabled: true
+    }
+  ],
   blurThreshold: 100,
   exposureTolerance: 0.018,
   cullLine: 40,
@@ -167,6 +301,27 @@ export function loadAppConfig() {
 
 export function saveAppConfig(config: AppConfig) {
   return invoke<AppConfigEnvelope>('save_app_config', { config });
+}
+
+export function downloadModel(request: DownloadModelRequest) {
+  return invoke<DownloadModelSummary>('download_model', { request });
+}
+
+export function cancelModelDownload(modelId: string) {
+  return invoke<void>('cancel_model_download', { modelId });
+}
+
+export function listenModelDownloadProgress(handler: (progress: ModelDownloadProgress) => void) {
+  if (!hasTauriRuntime()) return Promise.resolve(() => {});
+  return listen<ModelDownloadProgress>('model-download-progress', (event) => handler(event.payload));
+}
+
+export function listHuggingFaceVisionModels(request: HuggingFaceCatalogRequest) {
+  return invoke<HuggingFaceCatalogPage>('list_huggingface_vision_models', { request });
+}
+
+export function loadSystemResourceSnapshot() {
+  return invoke<SystemResourceSnapshot>('system_resource_snapshot');
 }
 
 export function exportProject(projectId: string, exportRoot?: string) {
@@ -248,6 +403,58 @@ export async function trySaveAppConfig(config: AppConfig) {
     console.info('Unable to save Cullify config.', error);
     return null;
   }
+}
+
+export async function tryDownloadModel(request: DownloadModelRequest) {
+  try {
+    return await downloadModel(request);
+  } catch (error) {
+    console.info('Unable to download Cullify model.', error);
+    return null;
+  }
+}
+
+export async function tryCancelModelDownload(modelId: string) {
+  try {
+    await cancelModelDownload(modelId);
+    return true;
+  } catch (error) {
+    console.info('Unable to cancel Cullify model download.', error);
+    return false;
+  }
+}
+
+export async function tryListHuggingFaceVisionModels(request: HuggingFaceCatalogRequest) {
+  if (!hasTauriRuntime()) return null;
+  try {
+    return await withTimeout(listHuggingFaceVisionModels(request), request.refresh ? 30000 : 3000);
+  } catch (error) {
+    console.info('Unable to load Hugging Face vision model catalog.', error);
+    return null;
+  }
+}
+
+export async function tryLoadSystemResourceSnapshot() {
+  if (!hasTauriRuntime()) return null;
+  try {
+    return await withTimeout(loadSystemResourceSnapshot(), 1200);
+  } catch (error) {
+    console.info('Unable to load Cullify resource snapshot.', error);
+    return null;
+  }
+}
+
+function hasTauriRuntime() {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+  return Promise.race<T | null>([
+    promise,
+    new Promise<null>((resolve) => {
+      window.setTimeout(() => resolve(null), timeoutMs);
+    })
+  ]);
 }
 
 export async function tryExportProject(projectId: string) {

@@ -1,9 +1,16 @@
 <script lang="ts">
   import { resolve } from '$app/paths';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import InspectorPanel from '$lib/components/InspectorPanel.svelte';
   import PhotoTile from '$lib/components/PhotoTile.svelte';
+  import { Alert, AlertDescription } from '$lib/components/ui/alert';
+  import { Badge } from '$lib/components/ui/badge';
+  import { Button } from '$lib/components/ui/button';
+  import { Progress } from '$lib/components/ui/progress';
   import { describeExportError } from '$lib/exportMessages';
+  import DownloadIcon from '@lucide/svelte/icons/download';
+  import Maximize2Icon from '@lucide/svelte/icons/maximize-2';
+  import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
   import {
     backendPhotoToPhoto,
     backendProjectToProject,
@@ -17,6 +24,7 @@
     tryListProjects
   } from '$lib/backend';
   import { photos as seedPhotos, projects as mockProjects } from '$lib/mockData';
+  import { getShellContext } from '$lib/shell.svelte';
   import type { Decision, FilterMode, Photo, Project } from '$lib/types';
 
   type SortMode = 'quality-desc' | 'quality-asc' | 'name-asc' | 'time-asc';
@@ -113,6 +121,7 @@
     { id: 'time-asc', label: '拍摄时间 早到晚' }
   ];
   const activeSortLabel = $derived(sortOptions.find((option) => option.id === sortMode)?.label ?? '质量分 高到低');
+  const shell = getShellContext();
 
   const filters: Array<{ id: FilterMode; label: string; count: () => number }> = [
     { id: 'all', label: '全部', count: () => groupedPhotos.length },
@@ -124,6 +133,31 @@
   onMount(() => {
     void loadShortcuts();
     loadActiveProject();
+  });
+
+  onDestroy(() => {
+    shell.resetPage();
+  });
+
+  $effect(() => {
+    shell.configure({
+      active: 'cull',
+      title: '照片挑选',
+      subtitle: `${project.shortName} · ${project.mode} · ${photos.length.toLocaleString()} 张`,
+      cullCount: String(photos.length),
+      sidebarExtra: cullSidebar,
+      showDefaultSidebarDetails: false,
+      footer: {
+        photo: `照片 ${currentPosition} / ${photos.length}`,
+        analysis: `${project.statusLabel} · 保留 ${keptCount} · 淘汰 ${culledCount} · 待定 ${pendingCount}`,
+        model: project.mode === 'quick' ? '快速模式 · Rust 原生分析' : `${project.mode} · 模型队列待接入`,
+        resources: {
+          cpu: isLoadingProject || isBatchUpdating ? 'CPU 写入中' : 'CPU 待机',
+          memory: `内存 已加载 ${photos.length.toLocaleString()} 张`,
+          gpu: '显存 未占用'
+        }
+      }
+    });
   });
 
   async function loadShortcuts() {
@@ -541,113 +575,105 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="app-shell cull-shell">
-  <aside class="sidebar">
-    <a class="brand" href={resolve('/')}>
-      <span class="brand-mark">Cullify</span>
-      <span class="brand-ver">v0.1.0</span>
-    </a>
+{#snippet cullSidebar()}
+  <div class="mode-switch">
+    <span class={project.mode === 'quick' ? 'active' : ''}>快速</span>
+    <span class={project.mode === 'expert' ? 'active' : 'planned'}>专家</span>
+    <span class={project.mode === 'arena' ? 'active' : 'planned'}>竞技场</span>
+  </div>
 
-    <div class="nav-section">
-      <p class="nav-eyebrow">导航</p>
-      <a class="nav-item" href={resolve('/')}>主控台</a>
-      <a class="nav-item active" href={resolve('/cull')}><span>照片挑选</span><span class="nav-count">{project.total.toLocaleString()}</span></a>
-      <a class="nav-item" href={resolve('/settings')}>设置</a>
-    </div>
+  <div class="project-meta">
+    <p class="meta-heading">项目</p>
+    <div class="meta-row"><span>名称</span><span class="meta-value">{project.shortName}</span></div>
+    <div class="meta-row"><span>模式</span><span class="meta-value">{project.mode}</span></div>
+    <div class="meta-row"><span>状态</span><span class="meta-value">{project.statusLabel}</span></div>
+    <p class="meta-heading">照片</p>
+    <div class="meta-row"><span>总数</span><span class="meta-value">{photos.length}</span></div>
+    <div class="meta-row"><span>保留</span><span class="meta-value">{keptCount}</span></div>
+    <div class="meta-row"><span>淘汰</span><span class="meta-value">{culledCount}</span></div>
+    <div class="meta-row"><span>待定</span><span class="meta-value">{pendingCount}</span></div>
+  </div>
 
-    <div class="mode-switch">
-      <span class={project.mode === 'quick' ? 'active' : ''}>快速</span>
-      <span class={project.mode === 'expert' ? 'active' : 'planned'}>专家</span>
-      <span class={project.mode === 'arena' ? 'active' : 'planned'}>竞技场</span>
-    </div>
+  <p class="nav-eyebrow group-title">连拍组</p>
+  <div class="group-list">
+    {#each sidebarGroups as group (group.id)}
+      <Button
+        variant="ghost"
+        size="sm"
+        class={['group-item', activeGroup === group.id && 'active'].filter(Boolean).join(' ')}
+        onclick={() => chooseGroup(group.id)}
+      >
+        <span>{group.name}</span>
+        <span>{group.count}</span>
+      </Button>
+    {/each}
+  </div>
+{/snippet}
 
-    <div class="project-meta">
-      <p class="meta-heading">项目</p>
-      <div class="meta-row"><span>名称</span><span class="meta-value">{project.shortName}</span></div>
-      <div class="meta-row"><span>模式</span><span class="meta-value">{project.mode}</span></div>
-      <div class="meta-row"><span>状态</span><span class="meta-value">{project.statusLabel}</span></div>
-      <p class="meta-heading">照片</p>
-      <div class="meta-row"><span>总数</span><span class="meta-value">{photos.length}</span></div>
-      <div class="meta-row"><span>保留</span><span class="meta-value">{keptCount}</span></div>
-      <div class="meta-row"><span>淘汰</span><span class="meta-value">{culledCount}</span></div>
-      <div class="meta-row"><span>待定</span><span class="meta-value">{pendingCount}</span></div>
-    </div>
-
-    <p class="nav-eyebrow group-title">连拍组</p>
-    <div class="group-list">
-      {#each sidebarGroups as group (group.id)}
-        <button
-          type="button"
-          class={['group-item', activeGroup === group.id && 'active'].filter(Boolean).join(' ')}
-          onclick={() => chooseGroup(group.id)}
-        >
-          <span>{group.name}</span>
-          <span>{group.count}</span>
-        </button>
-      {/each}
-    </div>
-  </aside>
-
-  <main class="app-main cull-main">
+<main class="app-main cull-main">
     <section class="workspace">
       <header class="toolbar">
         <div class="toolbar-left">
           <h1 class="panel-title">{project.name}</h1>
-          <span class={`tag tag-${project.mode}`}>{project.mode}</span>
+          <Badge class={`tag tag-${project.mode}`} variant="secondary">{project.mode}</Badge>
         </div>
         <div class="toolbar-right">
           <div class="filter-group">
             {#each filters as item (item.id)}
-              <button
-                type="button"
+              <Button
+                variant={filter === item.id ? 'secondary' : 'ghost'}
+                size="sm"
                 class={filter === item.id ? 'active' : ''}
                 onclick={() => chooseFilter(item.id)}
               >
                 {item.label}<span>{item.count()}</span>
-              </button>
+              </Button>
             {/each}
           </div>
-          <button class="btn btn-secondary sort-button" type="button" onclick={cycleSortMode}>
+          <Button class="sort-button" variant="outline" size="sm" onclick={cycleSortMode}>
+            <SlidersHorizontalIcon data-icon="inline-start" aria-hidden="true" />
             排序 · {activeSortLabel}
-          </button>
-          <button class="btn btn-secondary" type="button" onclick={openLightbox} disabled={!selectedPhoto}>
+          </Button>
+          <Button variant="outline" size="sm" onclick={openLightbox} disabled={!selectedPhoto}>
+            <Maximize2Icon data-icon="inline-start" aria-hidden="true" />
             灯箱 · {shortcutLabel('fullscreen')}
-          </button>
+          </Button>
           <div class="batch-actions" aria-label="批量标记当前筛选照片">
-            <button type="button" onclick={() => void setVisibleDecisions('keep')} disabled={isBatchUpdating || filteredPhotos.length === 0}>
+            <Button variant="ghost" size="sm" onclick={() => void setVisibleDecisions('keep')} disabled={isBatchUpdating || filteredPhotos.length === 0}>
               当前全要
-            </button>
-            <button type="button" class="danger" onclick={() => void setVisibleDecisions('cull')} disabled={isBatchUpdating || filteredPhotos.length === 0}>
+            </Button>
+            <Button variant="destructive" size="sm" onclick={() => void setVisibleDecisions('cull')} disabled={isBatchUpdating || filteredPhotos.length === 0}>
               当前全不要
-            </button>
-            <button type="button" onclick={() => void setVisibleDecisions(null)} disabled={isBatchUpdating || filteredPhotos.length === 0}>
+            </Button>
+            <Button variant="ghost" size="sm" onclick={() => void setVisibleDecisions(null)} disabled={isBatchUpdating || filteredPhotos.length === 0}>
               清空标记
-            </button>
+            </Button>
           </div>
-          <button class="btn btn-ghost export-button" type="button" onclick={() => void exportCurrentProject()} disabled={isExporting || isBatchUpdating}>
+          <Button class="export-button" variant="ghost" size="sm" onclick={() => void exportCurrentProject()} disabled={isExporting || isBatchUpdating}>
+            <DownloadIcon data-icon="inline-start" aria-hidden="true" />
             {isExporting ? '导出中' : '导出'}
-          </button>
+          </Button>
         </div>
       </header>
 
       {#if exportMessage}
-        <div class="export-note">
-          <span>{exportMessage}</span>
+        <Alert class="export-note">
+          <AlertDescription>{exportMessage}</AlertDescription>
           {#if lastExportZipPath}
-            <button type="button" onclick={() => void revealLastExport()}>打开导出目录</button>
+            <Button variant="outline" size="sm" onclick={() => void revealLastExport()}>打开导出目录</Button>
           {/if}
-        </div>
+        </Alert>
       {/if}
 
       {#if isLoadingProject || projectMessage}
-        <div class="project-note" role="status">
-          {isLoadingProject ? '正在加载项目照片...' : projectMessage}
-        </div>
+        <Alert class="project-note">
+          <AlertDescription>{isLoadingProject ? '正在加载项目照片...' : projectMessage}</AlertDescription>
+        </Alert>
       {/if}
 
       <div class="progress">
         <span class="num">进度</span>
-        <div class="progress-bar" aria-hidden="true"><span style:width={`${progressPercent}%`}></span></div>
+        <Progress class="progress-bar" value={progressPercent} />
         <div class="progress-stats">
           <span class="keep">保留 {keptCount}</span>
           <span class="cull">淘汰 {culledCount}</span>
@@ -666,14 +692,14 @@
           {#if hiddenPhotoCount > 0}
             <div class="load-more">
               <span>已渲染 {visibleFilteredPhotos.length.toLocaleString()} / {filteredPhotos.length.toLocaleString()} 张</span>
-              <button type="button" onclick={loadMoreVisiblePhotos}>加载更多</button>
+              <Button variant="outline" size="sm" onclick={loadMoreVisiblePhotos}>加载更多</Button>
             </div>
           {/if}
         {:else}
           <div class="empty-state">
             <strong>{emptyTitle}</strong>
             <span>{emptyCopy}</span>
-            <a class="btn btn-secondary" href={resolve('/')}>返回主控台</a>
+            <Button href={resolve('/')} variant="outline">返回主控台</Button>
           </div>
         {/if}
       </div>
@@ -692,22 +718,7 @@
     </section>
   </main>
 
-  <footer class="statusbar">
-    <div class="side">
-      <span class="pip">{project.statusLabel} · {project.mode} 模式</span>
-      <span>当前 {currentPosition} / {photos.length}</span>
-      <span>保留 {keptCount} · 淘汰 {culledCount}</span>
-    </div>
-    <div class="side">
-      <span>已加载 {photos.length} 张照片</span>
-      {#if filteredPhotos.length > visibleFilteredPhotos.length}
-        <span>已渲染 {visibleFilteredPhotos.length} / {filteredPhotos.length}</span>
-      {/if}
-      <span>本地版</span>
-    </div>
-  </footer>
-
-  {#if isLightboxOpen && selectedPhoto}
+{#if isLightboxOpen && selectedPhoto}
     <div class="lightbox" role="dialog" aria-modal="true" aria-label={`灯箱查看 ${selectedPhoto.name}`}>
       <div class="lightbox-top">
         <div>
@@ -715,12 +726,12 @@
           <span>{currentPosition} / {photos.length} · {selectedPhoto.score}/100 · {selectedPhoto.size}</span>
         </div>
         <div class="lightbox-actions">
-          <button type="button" onclick={() => moveBy(-1)} disabled={filteredPhotos.length <= 1}>上一张</button>
-          <button type="button" onclick={() => moveBy(1)} disabled={filteredPhotos.length <= 1}>下一张</button>
-          <button type="button" onclick={() => (isLightboxZoomed = !isLightboxZoomed)}>
+          <Button variant="outline" size="sm" onclick={() => moveBy(-1)} disabled={filteredPhotos.length <= 1}>上一张</Button>
+          <Button variant="outline" size="sm" onclick={() => moveBy(1)} disabled={filteredPhotos.length <= 1}>下一张</Button>
+          <Button variant="outline" size="sm" onclick={() => (isLightboxZoomed = !isLightboxZoomed)}>
             {isLightboxZoomed ? '适合窗口' : '100%'}
-          </button>
-          <button type="button" onclick={closeLightbox}>关闭</button>
+          </Button>
+          <Button variant="outline" size="sm" onclick={closeLightbox}>关闭</Button>
         </div>
       </div>
 
@@ -746,14 +757,13 @@
           <span>ISO {selectedPhoto.iso}</span>
         </div>
         <div class="lightbox-decisions">
-          <button type="button" class="keep" onclick={() => void setDecision('keep')}>保留 · {shortcutLabel('keep')}</button>
-          <button type="button" class="cull" onclick={() => void setDecision('cull')}>淘汰 · {shortcutLabel('cull')}</button>
-          <button type="button" onclick={() => void setDecision(null)}>待定 · {shortcutLabel('skip')}</button>
+          <Button class="keep" size="sm" onclick={() => void setDecision('keep')}>保留 · {shortcutLabel('keep')}</Button>
+          <Button class="cull" variant="destructive" size="sm" onclick={() => void setDecision('cull')}>淘汰 · {shortcutLabel('cull')}</Button>
+          <Button variant="outline" size="sm" onclick={() => void setDecision(null)}>待定 · {shortcutLabel('skip')}</Button>
         </div>
       </div>
     </div>
-  {/if}
-</div>
+{/if}
 
 <style>
   .cull-main {
@@ -779,7 +789,7 @@
     flex: 1;
     border-radius: 5px;
     background: transparent;
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     font-weight: 700;
     padding: 7px 8px;
@@ -814,7 +824,7 @@
   }
 
   .meta-row {
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     padding: 3px 0;
   }
@@ -834,7 +844,7 @@
     gap: 2px;
   }
 
-  .group-item {
+  :global(.group-item) {
     display: flex;
     justify-content: space-between;
     width: 100%;
@@ -846,13 +856,13 @@
     text-align: left;
   }
 
-  .group-item:hover,
-  .group-item.active {
+  :global(.group-item:hover),
+  :global(.group-item.active) {
     background: var(--tag-bg-soft);
     color: var(--accent);
   }
 
-  .group-item span:last-child {
+  :global(.group-item span:last-child) {
     color: var(--meta);
     font-family: var(--font-mono);
     font-size: 10px;
@@ -892,7 +902,7 @@
     justify-content: flex-end;
   }
 
-  .toolbar-right button {
+  :global(.toolbar-right [data-slot="button"]) {
     flex: 0 0 auto;
     white-space: nowrap;
   }
@@ -916,15 +926,15 @@
     padding: 2px;
   }
 
-  .filter-group button {
+  :global(.filter-group [data-slot="button"]) {
     border-radius: 4px;
     background: transparent;
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     padding: 5px 10px;
   }
 
-  .filter-group button.active {
+  :global(.filter-group [data-slot="button"].active) {
     background: var(--surface-warm);
     color: var(--fg);
   }
@@ -945,7 +955,7 @@
     padding: 2px;
   }
 
-  .batch-actions button {
+  :global(.batch-actions [data-slot="button"]) {
     border-radius: 4px;
     background: transparent;
     color: var(--accent);
@@ -955,15 +965,11 @@
     white-space: nowrap;
   }
 
-  .batch-actions button:hover {
+  :global(.batch-actions [data-slot="button"]:hover) {
     background: var(--surface-warm);
   }
 
-  .batch-actions button.danger {
-    color: var(--danger);
-  }
-
-  .batch-actions button:disabled {
+  :global(.batch-actions [data-slot="button"]:disabled) {
     cursor: wait;
     opacity: 0.52;
   }
@@ -990,7 +996,7 @@
     border-left: 2px solid var(--accent);
     border-radius: 0 6px 6px 0;
     background: var(--surface);
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     line-height: 1.5;
     padding: 10px 12px;
@@ -1001,17 +1007,17 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--surface);
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     line-height: 1.5;
     padding: 10px 12px;
   }
 
-  .export-note span {
+  :global(.export-note [data-slot="alert-description"]) {
     min-width: 0;
   }
 
-  .export-note button {
+  :global(.export-note [data-slot="button"]) {
     flex: 0 0 auto;
     border: 1px solid var(--border);
     border-radius: 5px;
@@ -1022,19 +1028,13 @@
     padding: 6px 10px;
   }
 
-  .progress-bar {
+  :global(.progress-bar) {
     position: relative;
     flex: 1;
     height: 4px;
     overflow: hidden;
     border-radius: 2px;
     background: var(--border);
-  }
-
-  .progress-bar span {
-    position: absolute;
-    inset: 0 auto 0 0;
-    background: var(--accent);
   }
 
   .progress-stats {
@@ -1086,7 +1086,7 @@
     padding: 12px;
   }
 
-  .load-more button {
+  :global(.load-more [data-slot="button"]) {
     border: 1px solid var(--border);
     border-radius: 5px;
     background: var(--bg);
@@ -1096,7 +1096,7 @@
     padding: 6px 10px;
   }
 
-  .load-more button:hover {
+  :global(.load-more [data-slot="button"]:hover) {
     background: var(--surface-warm);
   }
 
@@ -1151,8 +1151,8 @@
     gap: 8px;
   }
 
-  .lightbox-actions button,
-  .lightbox-decisions button {
+  :global(.lightbox-actions [data-slot="button"]),
+  :global(.lightbox-decisions [data-slot="button"]) {
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 5px;
     background: rgba(250, 249, 245, 0.08);
@@ -1162,22 +1162,22 @@
     padding: 7px 10px;
   }
 
-  .lightbox-actions button:hover,
-  .lightbox-decisions button:hover {
+  :global(.lightbox-actions [data-slot="button"]:hover),
+  :global(.lightbox-decisions [data-slot="button"]:hover) {
     background: rgba(250, 249, 245, 0.14);
   }
 
-  .lightbox-actions button:disabled {
+  :global(.lightbox-actions [data-slot="button"]:disabled) {
     cursor: default;
     opacity: 0.42;
   }
 
-  .lightbox-decisions .keep {
+  :global(.lightbox-decisions .keep) {
     border-color: color-mix(in srgb, var(--success) 70%, transparent);
     background: color-mix(in srgb, var(--success) 78%, transparent);
   }
 
-  .lightbox-decisions .cull {
+  :global(.lightbox-decisions .cull) {
     border-color: color-mix(in srgb, var(--danger) 70%, transparent);
     background: color-mix(in srgb, var(--danger) 78%, transparent);
   }
@@ -1229,7 +1229,7 @@
     border: 1px dashed var(--border);
     border-radius: 8px;
     background: var(--surface);
-    color: var(--muted);
+    color: var(--muted-foreground);
     text-align: center;
   }
 

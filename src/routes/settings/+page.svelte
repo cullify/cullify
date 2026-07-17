@@ -1,17 +1,49 @@
 <script lang="ts">
-  import { resolve } from '$app/paths';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     defaultAppConfig,
+    listenModelDownloadProgress,
+    tryCancelModelDownload,
+    tryDownloadModel,
+    tryListHuggingFaceVisionModels,
     tryLoadAppConfig,
     trySaveAppConfig,
-    type AppConfig
+    type AppConfig,
+    type DownloadModelSummary,
+    type HuggingFaceVisionModel,
+    type LocalModelConfig,
+    type ModelDownloadProgress,
+    type ThirdPartyProviderConfig
   } from '$lib/backend';
-  import { models as seedModels, providers, shortcuts as seedShortcuts } from '$lib/mockData';
-  import type { ProviderId, Shortcut, VlmModel } from '$lib/types';
+  import { shortcuts as seedShortcuts } from '$lib/mockData';
+  import { Button } from '$lib/components/ui/button';
+  import * as Card from '$lib/components/ui/card';
+  import ModeParameters from '$lib/settings/ModeParameters.svelte';
+  import ProviderSettings from '$lib/settings/ProviderSettings.svelte';
+  import ShortcutSettings from '$lib/settings/ShortcutSettings.svelte';
+  import {
+    catalogModelFromLocalModel,
+    cloneLocalModels,
+    cloneProviders,
+    formatBytes,
+    formatCompactNumber,
+    legacyProviderId,
+    normalizeProvider,
+    uniqueId,
+    upsertLocalModelFromCatalog,
+    validDownloadUrl,
+    type CatalogStatus,
+    type NumberSettingField
+  } from '$lib/settings/modelHelpers';
+  import { getShellContext } from '$lib/shell.svelte';
+  import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
+  import SaveIcon from '@lucide/svelte/icons/save';
+  import type { Shortcut } from '$lib/types';
 
-  let activeProvider = $state<ProviderId>(defaultAppConfig.providerId);
-  let models = $state<VlmModel[]>(seedModels.map((model) => ({ ...model })));
+  let activeProvider = $state(defaultAppConfig.activeModelProviderId);
+  let activeLocalModelId = $state(defaultAppConfig.activeLocalModelId);
+  let localModels = $state<LocalModelConfig[]>(cloneLocalModels(defaultAppConfig.localModels));
+  let thirdPartyProviders = $state<ThirdPartyProviderConfig[]>(cloneProviders(defaultAppConfig.thirdPartyProviders));
   let blurThreshold = $state(defaultAppConfig.blurThreshold);
   let exposureTolerance = $state(defaultAppConfig.exposureTolerance);
   let cullLine = $state(defaultAppConfig.cullLine);
@@ -22,17 +54,87 @@
   let shortcuts = $state<Shortcut[]>(seedShortcuts.map((shortcut) => ({ ...shortcut, keys: [...shortcut.keys] })));
   let editingShortcut = $state<string | null>(null);
   let dirtyFields = $state<string[]>([]);
-  let configPath = $state('~/.cullify/config.toml');
+  let configPath = $state('桌面环境可用');
+  let appDataDir = $state('桌面环境可用');
   let isLoadingConfig = $state(true);
   let isSavingConfig = $state(false);
   let configError = $state('');
+  let downloadingModelId = $state('');
+  let cancelingModelId = $state('');
+  let downloadMessage = $state('');
+  let downloadProgress = $state<Record<string, ModelDownloadProgress>>({});
+  let resumableDownloads = $state<Record<string, number>>({});
+  let modelCatalog = $state<HuggingFaceVisionModel[]>([]);
+  let modelCatalogStatus = $state<CatalogStatus>('fallback');
+  let modelCatalogTotal = $state(0);
+  let modelCatalogHasMore = $state(false);
+  let modelCatalogCacheDate = $state('');
+  let isCatalogRefreshing = $state(false);
+  let isLoadingMoreModels = $state(false);
+  let modelCatalogSearch = $state('');
+  let providerSearch = $state('');
+  let showProviderDraft = $state(false);
+  let newProviderName = $state('');
+  let newProviderBaseUrl = $state('http://localhost:11434/v1');
+  let newProviderModel = $state('');
+  let newProviderApiKey = $state('');
 
-  const activeProviderName = $derived(providers.find((provider) => provider.id === activeProvider)?.name ?? '未配置');
-  const activeModelId = $derived(models.find((model) => model.active)?.id ?? defaultAppConfig.activeModelId);
+  const activeProviderConfig = $derived(thirdPartyProviders.find((provider) => provider.id === activeProvider) ?? null);
+  const activeProviderName = $derived(providerName(activeProvider));
+  const activeModelId = $derived(activeProvider === 'llama.cpp' ? activeLocalModelId : (activeProviderConfig?.model || '未指定'));
+  const activeLocalModel = $derived(localModels.find((model) => model.id === activeLocalModelId) ?? null);
   const dirtyCount = $derived(dirtyFields.length);
+  const shell = getShellContext();
+  const filteredThirdPartyProviders = $derived.by(() => {
+    const keyword = providerSearch.trim().toLowerCase();
+    if (!keyword) return thirdPartyProviders;
+    return thirdPartyProviders.filter((provider) =>
+      [provider.name, provider.id, provider.baseUrl, provider.model].some((value) => value.toLowerCase().includes(keyword))
+    );
+  });
+  const visibleCatalogModels = $derived.by(() => {
+    const rows = modelCatalog.length ? modelCatalog : localModels.map(catalogModelFromLocalModel);
+    const keyword = modelCatalogSearch.trim().toLowerCase();
+    if (!keyword) return rows;
+    return rows.filter((model) =>
+      [model.name, model.repoId, model.fileName, model.task, model.author].some((value) =>
+        value.toLowerCase().includes(keyword)
+      )
+    );
+  });
 
   onMount(() => {
     void loadSavedConfig();
+    void loadHuggingFaceCatalog();
+  });
+
+  onDestroy(() => {
+    shell.resetPage();
+  });
+
+  $effect(() => {
+    shell.configure({
+      active: 'settings',
+      title: '设置',
+      subtitle: `${activeProviderName} · ${activeModelId}`,
+      cullCount: '·',
+      sidebarExtra: settingsSidebar,
+      showDefaultSidebarDetails: false,
+      footer: {
+        photo: '照片分析待机',
+        analysis: dirtyCount ? `${dirtyCount} 项配置未保存` : '配置已保存',
+        model: downloadingModelId
+          ? `模型下载 · ${downloadingModelId}`
+          : isCatalogRefreshing
+            ? '模型目录刷新中'
+            : `当前模型 · ${activeModelId}`,
+        resources: {
+          cpu: isCatalogRefreshing || downloadingModelId ? 'CPU 网络任务' : 'CPU 待机',
+          memory: modelCatalog.length ? `内存 模型缓存 ${modelCatalog.length}/${modelCatalogTotal}` : '内存 本地列表',
+          gpu: gpuMetal ? '显存 Metal 已启用' : '显存 Metal 关闭'
+        }
+      }
+    });
   });
 
   async function loadSavedConfig() {
@@ -41,15 +143,26 @@
     const envelope = await tryLoadAppConfig();
     if (envelope) {
       configPath = envelope.configPath;
+      appDataDir = envelope.appDataDir;
       applyConfig(envelope.config);
     } else {
+      configPath = '桌面环境可用';
+      appDataDir = '桌面环境可用';
       applyConfig(defaultAppConfig);
     }
     isLoadingConfig = false;
   }
 
   function applyConfig(config: AppConfig) {
-    activeProvider = normalizeProvider(config.providerId);
+    localModels = cloneLocalModels(config.localModels?.length ? config.localModels : defaultAppConfig.localModels);
+    thirdPartyProviders = cloneProviders(
+      config.thirdPartyProviders?.length ? config.thirdPartyProviders : defaultAppConfig.thirdPartyProviders
+    );
+    activeProvider = normalizeProvider(config.activeModelProviderId || config.providerId, thirdPartyProviders);
+    activeLocalModelId = config.activeLocalModelId || config.activeModelId || localModels[0]?.id || defaultAppConfig.activeLocalModelId;
+    if (!localModels.some((model) => model.id === activeLocalModelId)) {
+      activeLocalModelId = localModels[0]?.id ?? defaultAppConfig.activeLocalModelId;
+    }
     blurThreshold = config.blurThreshold;
     exposureTolerance = config.exposureTolerance;
     cullLine = config.cullLine;
@@ -58,28 +171,229 @@
     autoGroup = config.autoGroup;
     gpuMetal = config.gpuMetal;
 
-    models = seedModels.map((model) => ({
-      ...model,
-      active: model.id === config.activeModelId,
-      action: model.id === config.activeModelId ? '已激活' : model.action === '已激活' ? '切换' : model.action
-    }));
-
     shortcuts = seedShortcuts.map((shortcut) => ({
       ...shortcut,
       keys: config.shortcuts.find((item) => item.id === shortcut.id)?.keys ?? [...shortcut.keys]
     }));
+    downloadMessage = '';
     dirtyFields = [];
   }
 
-  function normalizeProvider(providerId: string): ProviderId {
-    if (providerId === 'ollama' || providerId === 'openai') return providerId;
-    return 'builtin';
+  function providerName(providerId: string) {
+    if (providerId === 'llama.cpp') return '本地模型';
+    return thirdPartyProviders.find((provider) => provider.id === providerId)?.name ?? '未配置';
+  }
+
+  function resolvedActiveModelId() {
+    if (activeProvider === 'llama.cpp') return activeLocalModelId;
+    return thirdPartyProviders.find((provider) => provider.id === activeProvider)?.model || '';
+  }
+
+  function selectedLocalModelPath(model: LocalModelConfig) {
+    return model.localPath || `${appDataDir}/models/${model.fileName}`;
+  }
+
+  function progressForModel(modelId: string) {
+    return downloadProgress[modelId] ?? null;
+  }
+
+  function progressButtonLabel(model: HuggingFaceVisionModel, progress: ModelDownloadProgress | null) {
+    if (downloadingModelId !== model.id) return modelActionLabel(model);
+    if (cancelingModelId === model.id) return '取消中';
+    return progress ? '取消下载' : '取消';
+  }
+
+  function progressDetail(progress: ModelDownloadProgress) {
+    if (progress.totalBytes) return `${formatBytes(progress.downloadedBytes)} / ${formatBytes(progress.totalBytes)}`;
+    return `${formatBytes(progress.downloadedBytes)} 已下载`;
+  }
+
+  function modelStatusText(model: HuggingFaceVisionModel, partialBytes: number) {
+    if (downloadingModelId === model.id) {
+      const progress = progressForModel(model.id);
+      return progress ? progressDetail(progress) : '准备下载';
+    }
+    if (model.downloaded && !model.updateAvailable) return '本地可用';
+    if (model.updateAvailable) return '可更新';
+    if (partialBytes > 0) return `可继续 · ${formatBytes(partialBytes)}`;
+    return `${formatCompactNumber(model.downloads)} downloads`;
+  }
+
+  function removeDownloadProgress(modelId: string) {
+    const nextProgress = { ...downloadProgress };
+    delete nextProgress[modelId];
+    downloadProgress = nextProgress;
+  }
+
+  function rememberResumableDownload(modelId: string) {
+    const bytes = progressForModel(modelId)?.downloadedBytes ?? 0;
+    if (bytes <= 0) return;
+    resumableDownloads = { ...resumableDownloads, [modelId]: bytes };
+  }
+
+  function forgetResumableDownload(modelId: string) {
+    const nextDownloads = { ...resumableDownloads };
+    delete nextDownloads[modelId];
+    resumableDownloads = nextDownloads;
+  }
+
+  function providerModelSummary(providerId: string) {
+    if (providerId === 'llama.cpp') return `llama.cpp 驱动 · ${activeLocalModel?.name ?? activeLocalModelId}`;
+    return thirdPartyProviders.find((provider) => provider.id === providerId)?.model || '未指定模型';
+  }
+
+  function resumableBytes(model: HuggingFaceVisionModel) {
+    if (model.downloaded && !model.updateAvailable) return 0;
+    return resumableDownloads[model.id] ?? model.partialDownloadedBytes ?? 0;
+  }
+
+  function modelActionLabel(model: HuggingFaceVisionModel) {
+    if (downloadingModelId === model.id) return cancelingModelId === model.id ? '取消中' : '取消下载';
+    if (model.downloaded && model.updateAvailable) return '更新';
+    if (model.downloaded) return '已下载';
+    if (resumableBytes(model) > 0) return '继续';
+    return '下载';
+  }
+
+  function modelActionDisabled(model: HuggingFaceVisionModel) {
+    if (downloadingModelId === model.id) return cancelingModelId === model.id;
+    if (downloadingModelId) return true;
+    return (model.downloaded && !model.updateAvailable) || !validDownloadUrl(model.downloadUrl);
+  }
+
+  async function loadHuggingFaceCatalog(refresh = false) {
+    const offset = refresh ? 0 : modelCatalog.length;
+    const taskId = refresh ? 'hf-catalog-refresh' : 'hf-catalog-load';
+    if (offset === 0) {
+      isCatalogRefreshing = true;
+      shell.startTask({
+        id: taskId,
+        label: refresh ? '刷新模型目录' : '加载模型目录',
+        detail: '读取 Hugging Face 缓存',
+        progress: null
+      });
+    } else {
+      isLoadingMoreModels = true;
+    }
+
+    try {
+      const page = await catalogRequestWithTimeout({ offset, limit: 20, refresh });
+      if (page?.models.length) {
+        modelCatalog = offset === 0 ? page.models : [...modelCatalog, ...page.models];
+        modelCatalogTotal = page.total;
+        modelCatalogHasMore = page.hasMore;
+        modelCatalogCacheDate = page.cacheDate;
+        modelCatalogStatus = 'ready';
+        if (offset === 0) shell.finishTask(taskId, refresh ? '缓存已刷新' : '缓存已读取');
+      } else if (offset === 0) {
+        modelCatalog = [];
+        modelCatalogTotal = 0;
+        modelCatalogHasMore = false;
+        modelCatalogCacheDate = '';
+        modelCatalogStatus = 'fallback';
+        shell.finishTask(taskId, '使用本地模型列表');
+      }
+    } finally {
+      isCatalogRefreshing = false;
+      isLoadingMoreModels = false;
+    }
+  }
+
+  function catalogRequestWithTimeout(request: { offset: number; limit: number; refresh: boolean }) {
+    return Promise.race([
+      tryListHuggingFaceVisionModels(request),
+      new Promise<null>((resolve) => {
+        window.setTimeout(() => resolve(null), request.refresh ? 30000 : 3000);
+      })
+    ]);
+  }
+
+  async function loadMoreHuggingFaceModels() {
+    if (!modelCatalogHasMore || isLoadingMoreModels || isCatalogRefreshing) return;
+    await loadHuggingFaceCatalog(false);
+  }
+
+  function resetProviderDraft() {
+    newProviderName = '';
+    newProviderBaseUrl = 'http://localhost:11434/v1';
+    newProviderModel = '';
+    newProviderApiKey = '';
+  }
+
+  function setProviderDraftField(field: 'name' | 'baseUrl' | 'model' | 'apiKey', value: string) {
+    if (field === 'name') newProviderName = value;
+    if (field === 'baseUrl') newProviderBaseUrl = value;
+    if (field === 'model') newProviderModel = value;
+    if (field === 'apiKey') newProviderApiKey = value;
+  }
+
+  function cancelProviderDraft() {
+    showProviderDraft = false;
+    resetProviderDraft();
+  }
+
+  function canDownload(model: LocalModelConfig) {
+    return validDownloadUrl(model.downloadUrl) && Boolean(model.fileName.trim()) && !downloadingModelId;
+  }
+
+  async function cancelActiveModelDownload(modelId: string) {
+    if (downloadingModelId !== modelId || cancelingModelId) return;
+    cancelingModelId = modelId;
+    downloadMessage = '正在取消下载...';
+    shell.updateTask(`model-download-${modelId}`, {
+      detail: '正在取消下载',
+      progress: progressForModel(modelId)?.percent ?? null
+    });
+
+    const cancelled = await tryCancelModelDownload(modelId);
+    if (!cancelled) {
+      cancelingModelId = '';
+      downloadMessage = '取消失败，请稍后重试。';
+      shell.updateTask(`model-download-${modelId}`, {
+        detail: progressForModel(modelId) ? progressDetail(progressForModel(modelId)!) : '仍在下载',
+        progress: progressForModel(modelId)?.percent ?? null
+      });
+    }
+  }
+
+  async function withDownloadProgress(
+    taskId: string,
+    modelId: string,
+    initialBytes: number,
+    run: () => Promise<DownloadModelSummary | null>
+  ) {
+    downloadProgress = {
+      ...downloadProgress,
+      [modelId]: { modelId, downloadedBytes: initialBytes, totalBytes: null, percent: initialBytes ? null : 0 }
+    };
+
+    let unlisten = () => {};
+    try {
+      unlisten = await listenModelDownloadProgress((progress) => {
+        if (progress.modelId !== modelId) return;
+        downloadProgress = { ...downloadProgress, [modelId]: progress };
+        const detail = progressDetail(progress);
+        const percentText = progress.percent === null ? '' : `${progress.percent}% · `;
+        downloadMessage = `正在下载 ${percentText}${detail}`;
+        shell.updateTask(taskId, {
+          detail,
+          progress: progress.percent
+        });
+      });
+      return await run();
+    } finally {
+      unlisten();
+    }
   }
 
   function buildConfig(): AppConfig {
     return {
-      providerId: activeProvider,
-      activeModelId,
+      providerId: legacyProviderId(activeProvider),
+      activeModelId: resolvedActiveModelId(),
+      activeModelProviderId: activeProvider,
+      activeLocalModelId,
+      localModels: cloneLocalModels(localModels),
+      thirdPartyProviders: cloneProviders(thirdPartyProviders),
       blurThreshold,
       exposureTolerance,
       cullLine,
@@ -95,21 +409,171 @@
     if (!dirtyFields.includes(label)) dirtyFields.push(label);
   }
 
-  function selectProvider(provider: ProviderId) {
+  function selectProvider(provider: string) {
     activeProvider = provider;
-    markDirty(`Provider → ${providers.find((item) => item.id === provider)?.name ?? provider}`);
+    markDirty(`供应商 → ${providerName(provider)}`);
   }
 
-  function activateModel(modelId: string) {
-    models = models.map((model) => ({
-      ...model,
-      active: model.id === modelId,
-      action: model.id === modelId ? '已激活' : model.action === '已激活' ? '切换' : model.action
-    }));
-    markDirty(`模型 → ${models.find((model) => model.id === modelId)?.name ?? modelId}`);
+  function activateLocalModel(modelId: string) {
+    activeProvider = 'llama.cpp';
+    activeLocalModelId = modelId;
+    markDirty(`本地模型 → ${localModels.find((model) => model.id === modelId)?.name ?? modelId}`);
   }
 
-  function updateNumber(field: 'blur' | 'exposure' | 'cull' | 'threads', value: number) {
+  async function downloadLocalModel(model: LocalModelConfig) {
+    if (!canDownload(model)) {
+      downloadMessage = '当前模型没有可用下载源，或文件名无效。';
+      return;
+    }
+    const taskId = `model-download-${model.id}`;
+    downloadingModelId = model.id;
+    cancelingModelId = '';
+    downloadMessage = `正在下载 ${model.name}...`;
+    shell.startTask({
+      id: taskId,
+      label: '模型下载',
+      detail: model.name,
+      progress: 0
+    });
+    try {
+      const summary = await withDownloadProgress(taskId, model.id, 0, () =>
+        tryDownloadModel({
+          modelId: model.id,
+          fileName: model.fileName,
+          downloadUrl: model.downloadUrl
+        })
+      );
+      if (summary) {
+        localModels = localModels.map((item) =>
+          item.id === model.id ? { ...item, downloaded: true, localPath: summary.path } : item
+        );
+        activeProvider = 'llama.cpp';
+        activeLocalModelId = model.id;
+        downloadMessage = `已下载 ${formatBytes(summary.bytes)} 到 ${summary.path}`;
+        forgetResumableDownload(model.id);
+        markDirty(`下载模型 → ${model.name}`);
+        shell.finishTask(taskId, '下载完成');
+      } else if (cancelingModelId === model.id) {
+        rememberResumableDownload(model.id);
+        downloadMessage = `已取消 ${model.name} 下载`;
+        shell.cancelTask(taskId, '已取消');
+      } else {
+        rememberResumableDownload(model.id);
+        downloadMessage = '下载失败，请确认地址可访问、磁盘空间充足，并查看终端日志。';
+        shell.failTask(taskId, '下载失败');
+      }
+    } finally {
+      removeDownloadProgress(model.id);
+      downloadingModelId = '';
+      cancelingModelId = '';
+    }
+  }
+
+  async function downloadCatalogModel(model: HuggingFaceVisionModel) {
+    if (downloadingModelId && downloadingModelId !== model.id) return;
+    if (modelActionDisabled(model) && !(model.downloaded && model.updateAvailable)) return;
+    const taskId = `model-download-${model.id}`;
+    const partialBytes = resumableBytes(model);
+    downloadingModelId = model.id;
+    cancelingModelId = '';
+    downloadMessage = `${partialBytes ? '正在继续下载' : model.updateAvailable ? '正在更新' : '正在下载'} ${model.name}...`;
+    shell.startTask({
+      id: taskId,
+      label: model.updateAvailable ? '模型更新' : '模型下载',
+      detail: model.name,
+      progress: 0
+    });
+    try {
+      const summary = await withDownloadProgress(taskId, model.id, partialBytes, () =>
+        tryDownloadModel({
+          modelId: model.id,
+          fileName: model.fileName,
+          downloadUrl: model.downloadUrl
+        })
+      );
+      if (summary) {
+        const downloadedModel = {
+          ...model,
+          downloaded: true,
+          updateAvailable: false,
+          localPath: summary.path,
+          partialDownloadedBytes: 0,
+          partialPath: null
+        };
+        modelCatalog = modelCatalog.map((item) => (item.id === model.id ? downloadedModel : item));
+        localModels = upsertLocalModelFromCatalog(localModels, downloadedModel, summary.path);
+        activeProvider = 'llama.cpp';
+        activeLocalModelId = model.id;
+        downloadMessage = `已${model.updateAvailable ? '更新' : '下载'} ${formatBytes(summary.bytes)} 到 ${summary.path}`;
+        forgetResumableDownload(model.id);
+        markDirty(`${model.updateAvailable ? '更新' : '下载'}模型 → ${model.name}`);
+        shell.finishTask(taskId, model.updateAvailable ? '更新完成' : '下载完成');
+      } else if (cancelingModelId === model.id) {
+        rememberResumableDownload(model.id);
+        downloadMessage = `已取消 ${model.name} 下载`;
+        shell.cancelTask(taskId, '已取消');
+      } else {
+        rememberResumableDownload(model.id);
+        downloadMessage = '下载失败，请确认 Hugging Face 可访问、磁盘空间充足，并查看终端日志。';
+        shell.failTask(taskId, '下载失败');
+      }
+    } finally {
+      removeDownloadProgress(model.id);
+      downloadingModelId = '';
+      cancelingModelId = '';
+    }
+  }
+
+  function addProvider() {
+    if (!newProviderName.trim() || !newProviderBaseUrl.trim()) {
+      configError = '添加供应商需要填写名称和 Base URL。';
+      return;
+    }
+    const id = uniqueId(newProviderName, thirdPartyProviders.map((provider) => provider.id), 'provider');
+    thirdPartyProviders = [
+      ...thirdPartyProviders,
+      {
+        id,
+        name: newProviderName.trim(),
+        baseUrl: newProviderBaseUrl.trim(),
+        apiKey: newProviderApiKey,
+        model: newProviderModel.trim(),
+        kind: 'openai-compatible',
+        enabled: true
+      }
+    ];
+    activeProvider = id;
+    configError = '';
+    showProviderDraft = false;
+    resetProviderDraft();
+    markDirty('添加第三方供应商');
+  }
+
+  function removeProvider(providerId: string) {
+    thirdPartyProviders = thirdPartyProviders.filter((provider) => provider.id !== providerId);
+    if (activeProvider === providerId) activeProvider = 'llama.cpp';
+    markDirty('删除第三方供应商');
+  }
+
+  function updateProvider(
+    providerId: string,
+    field: 'name' | 'baseUrl' | 'apiKey' | 'model' | 'kind',
+    value: string
+  ) {
+    thirdPartyProviders = thirdPartyProviders.map((provider) =>
+      provider.id === providerId ? { ...provider, [field]: value } : provider
+    );
+    markDirty(`供应商 ${field}`);
+  }
+
+  function toggleProvider(providerId: string) {
+    thirdPartyProviders = thirdPartyProviders.map((provider) =>
+      provider.id === providerId ? { ...provider, enabled: !provider.enabled } : provider
+    );
+    markDirty('供应商启用状态');
+  }
+
+  function updateNumber(field: NumberSettingField, value: number) {
     if (field === 'blur') {
       blurThreshold = value;
       markDirty(`模糊阈值 → ${value}`);
@@ -126,6 +590,25 @@
       vlmThreads = value;
       markDirty(`并发线程 → ${value}`);
     }
+  }
+
+  function setArenaTarget(value: string) {
+    arenaTarget = value;
+    markDirty(`竞技场目标 → ${arenaTarget}`);
+  }
+
+  function toggleAutoGroup() {
+    autoGroup = !autoGroup;
+    markDirty('连拍自动分组');
+  }
+
+  function toggleGpuMetal() {
+    gpuMetal = !gpuMetal;
+    markDirty('GPU 加速');
+  }
+
+  function setEditingShortcut(shortcutId: string) {
+    editingShortcut = shortcutId;
   }
 
   function remapShortcut(event: KeyboardEvent, shortcut: Shortcut) {
@@ -160,6 +643,7 @@
     const envelope = await trySaveAppConfig(buildConfig());
     if (envelope) {
       configPath = envelope.configPath;
+      appDataDir = envelope.appDataDir;
       applyConfig(envelope.config);
     } else {
       configError = '保存失败，请确认当前运行在 Tauri 桌面环境。';
@@ -168,31 +652,18 @@
   }
 </script>
 
-<div class="app-shell">
-  <aside class="sidebar">
-    <a class="brand" href={resolve('/')}>
-      <span class="brand-mark">Cullify</span>
-      <span class="brand-ver">v0.1.0</span>
-    </a>
+{#snippet settingsSidebar()}
+  <p class="nav-eyebrow">设置分组</p>
+  <div class="nav-section">
+    <a class="nav-item active" href="#provider">推理引擎 · Provider</a>
+    <a class="nav-item" href="#models">VLM 模型管理</a>
+    <a class="nav-item" href="#modes">模式参数</a>
+    <a class="nav-item" href="#shortcuts">键盘快捷键</a>
+    <a class="nav-item" href="#about">数据与关于</a>
+  </div>
+{/snippet}
 
-    <div class="nav-section">
-      <p class="nav-eyebrow">导航</p>
-      <a class="nav-item" href={resolve('/')}>主控台</a>
-      <a class="nav-item" href={resolve('/cull')}>照片挑选</a>
-      <a class="nav-item active" href={resolve('/settings')}>设置</a>
-    </div>
-
-    <p class="nav-eyebrow">设置分组</p>
-    <div class="nav-section">
-      <a class="nav-item active" href="#provider">推理引擎 · Provider</a>
-      <a class="nav-item" href="#models">VLM 模型管理</a>
-      <a class="nav-item" href="#modes">模式参数</a>
-      <a class="nav-item" href="#shortcuts">键盘快捷键</a>
-      <a class="nav-item" href="#about">数据与关于</a>
-    </div>
-  </aside>
-
-  <main class="app-main scroll">
+<main class="app-main scroll">
     <div class="settings-wrap">
       <header class="page-head">
         <p class="page-num">设置</p>
@@ -202,182 +673,85 @@
         </p>
       </header>
 
-      <section id="provider" class="section">
-        <div class="settings-head">
-          <h2>推理引擎 · Provider 切换</h2>
-          <span>三选一 · 当前为 {activeProviderName}</span>
-        </div>
-        <p class="section-copy">当前真实分析链路使用快速模式的 Rust 原生质量评分；Provider 配置会被保存，但专家模式要等模型任务队列接入后才参与项目创建。</p>
-        <div class="providers">
-          {#each providers as provider (provider.id)}
-            <button
-              type="button"
-              class={['provider', activeProvider === provider.id && 'active'].filter(Boolean).join(' ')}
-              aria-pressed={activeProvider === provider.id}
-              onclick={() => selectProvider(provider.id)}
-            >
-              <span class="provider-row">
-                <strong>{provider.name}</strong>
-                <span class={['provider-status', activeProvider === provider.id && 'on'].filter(Boolean).join(' ')}>
-                  {activeProvider === provider.id ? '已选择' : provider.status}
-                </span>
-              </span>
-              <span class="provider-desc">{provider.description}</span>
-              <span class="provider-meta"><span>{provider.metaLeft}</span><span>{provider.metaRight}</span></span>
-            </button>
-          {/each}
-        </div>
-      </section>
+      <ProviderSettings
+        {activeProvider}
+        {activeModelId}
+        {activeProviderName}
+        {activeProviderConfig}
+        {activeLocalModelId}
+        {appDataDir}
+        {filteredThirdPartyProviders}
+        {providerSearch}
+        {showProviderDraft}
+        providerDraft={{
+          name: newProviderName,
+          baseUrl: newProviderBaseUrl,
+          model: newProviderModel,
+          apiKey: newProviderApiKey
+        }}
+        {downloadingModelId}
+        {modelCatalog}
+        {visibleCatalogModels}
+        {modelCatalogStatus}
+        {modelCatalogTotal}
+        {modelCatalogHasMore}
+        {modelCatalogCacheDate}
+        {modelCatalogSearch}
+        {isCatalogRefreshing}
+        {isLoadingMoreModels}
+        {downloadMessage}
+        {providerModelSummary}
+        setProviderSearch={(value) => (providerSearch = value)}
+        {setProviderDraftField}
+        showDraft={() => (showProviderDraft = true)}
+        cancelDraft={cancelProviderDraft}
+        {addProvider}
+        {removeProvider}
+        {toggleProvider}
+        {selectProvider}
+        {updateProvider}
+        {progressForModel}
+        {progressButtonLabel}
+        {modelStatusText}
+        {resumableBytes}
+        {modelActionDisabled}
+        setModelCatalogSearch={(value) => (modelCatalogSearch = value)}
+        refreshCatalog={() => void loadHuggingFaceCatalog(true)}
+        loadMoreModels={() => void loadMoreHuggingFaceModels()}
+        downloadCatalogModel={(model) => void downloadCatalogModel(model)}
+        cancelActiveModelDownload={(modelId) => void cancelActiveModelDownload(modelId)}
+      />
 
-      <section id="models" class="section">
-        <div class="settings-head">
-          <h2>VLM 模型管理</h2>
-          <span>当前模型 · {activeModelId}</span>
-        </div>
-        <p class="section-copy">模型清单为后续专家模式预留。商业版接入 VLM 前，需要把“可下载、可校验、可回滚”作为模型管理的核心能力。</p>
-        <div class="model-list">
-          {#each models as model (model.id)}
-            <div class={['model-row-item', model.active && 'active'].filter(Boolean).join(' ')}>
-              <span class="model-state"></span>
-              <span>
-                <strong>{model.name}</strong>
-                <small>{model.file}</small>
-              </span>
-              <span class="model-size">{model.size}</span>
-              <span class="model-speed">{model.speed}</span>
-              <button type="button" class="model-action" onclick={() => activateModel(model.id)}>{model.action}</button>
-            </div>
-          {/each}
-        </div>
-      </section>
+      <ModeParameters
+        {blurThreshold}
+        {exposureTolerance}
+        {cullLine}
+        {vlmThreads}
+        {arenaTarget}
+        {autoGroup}
+        {gpuMetal}
+        {updateNumber}
+        {setArenaTarget}
+        {toggleAutoGroup}
+        {toggleGpuMetal}
+      />
 
-      <section id="modes" class="section">
-        <div class="settings-head">
-          <h2>模式参数</h2>
-          <span>阈值决定自动淘汰的激进程度</span>
-        </div>
-        <p class="section-copy">快速模式会读取模糊、曝光、淘汰线和连拍分组参数；竞技场与 VLM 线程参数会先保存为后续能力配置。</p>
-
-        <div class="form-row">
-          <span><strong>模糊检测阈值</strong><small>Laplacian 方差低于此值判定模糊</small></span>
-          <label class="range-control">
-            <input type="range" min="0" max="300" step="5" value={blurThreshold} oninput={(event) => updateNumber('blur', Number(event.currentTarget.value))} />
-            <span>{blurThreshold}.0</span>
-          </label>
-          <span class="form-value">默认 100</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>曝光宽容度</strong><small>直方图两端裁切比例</small></span>
-          <label class="range-control">
-            <input type="range" min="0" max="0.1" step="0.001" value={exposureTolerance} oninput={(event) => updateNumber('exposure', Number(event.currentTarget.value))} />
-            <span>{exposureTolerance.toFixed(3)}</span>
-          </label>
-          <span class="form-value">0.018</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>质量分淘汰线</strong><small>低于此值自动进入淘汰池</small></span>
-          <label class="range-control">
-            <input type="range" min="0" max="100" step="1" value={cullLine} oninput={(event) => updateNumber('cull', Number(event.currentTarget.value))} />
-            <span>{cullLine} / 100</span>
-          </label>
-          <span class="form-value">自动模式</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>竞技场目标保留</strong><small>循环 PK 直到剩余此比例</small></span>
-          <select bind:value={arenaTarget} onchange={() => markDirty(`竞技场目标 → ${arenaTarget}`)}>
-            <option>10%</option>
-            <option>20%</option>
-            <option>30%</option>
-            <option>50%</option>
-          </select>
-          <span class="form-value">约 250 张</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>并发推理线程</strong><small>Semaphore 同时进行的 VLM 调用数</small></span>
-          <label class="range-control">
-            <input type="range" min="1" max="8" step="1" value={vlmThreads} oninput={(event) => updateNumber('threads', Number(event.currentTarget.value))} />
-            <span>{vlmThreads}</span>
-          </label>
-          <span class="form-value">最大 8</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>连拍自动分组</strong><small>基于 pHash 相似度自动聚合连拍</small></span>
-          <button
-            type="button"
-            class={['toggle', autoGroup && 'on'].filter(Boolean).join(' ')}
-            aria-label="切换连拍自动分组"
-            aria-pressed={autoGroup}
-            onclick={() => { autoGroup = !autoGroup; markDirty('连拍自动分组'); }}
-          ></button>
-          <span class="form-value">{autoGroup ? '已开启' : '已关闭'}</span>
-        </div>
-
-        <div class="form-row">
-          <span><strong>GPU 加速 · Metal</strong><small>使用 Apple GPU 进行推理加速</small></span>
-          <button
-            type="button"
-            class={['toggle', gpuMetal && 'on'].filter(Boolean).join(' ')}
-            aria-label="切换 Metal GPU 加速"
-            aria-pressed={gpuMetal}
-            onclick={() => { gpuMetal = !gpuMetal; markDirty('GPU 加速'); }}
-          ></button>
-          <span class="form-value">{gpuMetal ? '已开启' : '已关闭'}</span>
-        </div>
-      </section>
-
-      <section id="shortcuts" class="section">
-        <div class="settings-head">
-          <h2>键盘快捷键</h2>
-          <span>点击按键即可重映射 · 文本框中自动暂停</span>
-        </div>
-        <p class="section-copy">摄影师的肌肉记忆比工具默认值重要。点击任意快捷键单元即可重映射，保存后挑选页会按本地配置执行。</p>
-        <table class="shortcuts-table">
-          <thead>
-            <tr><th>动作</th><th>场景</th><th>快捷键</th></tr>
-          </thead>
-          <tbody>
-            {#each shortcuts as shortcut (shortcut.id)}
-              <tr>
-                <td>{shortcut.action}</td>
-                <td>{shortcut.scenario}</td>
-                <td class="keys">
-                  <button
-                    type="button"
-                    class={['kbd-cell', editingShortcut === shortcut.id && 'editing'].filter(Boolean).join(' ')}
-                    onkeydown={(event) => remapShortcut(event, shortcut)}
-                    onclick={() => (editingShortcut = shortcut.id)}
-                  >
-                    {#each shortcut.keys as key (`${shortcut.id}-${key}`)}
-                      <span class="kbd">{key}</span>
-                    {/each}
-                    <span class="hint">{editingShortcut === shortcut.id ? '按键...' : '编辑'}</span>
-                  </button>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </section>
+      <ShortcutSettings {shortcuts} {editingShortcut} {setEditingShortcut} {remapShortcut} />
 
       <section id="about" class="section">
         <div class="settings-head">
           <h2>关于</h2>
           <span>本地离线 · 商业可交付目标</span>
         </div>
-        <div class="colophon">
+        <Card.Root class="colophon">
           <p>Cullify 0.1.0 是面向摄影师的本地 AI 选片工具。当前版本已接入 Rust 扫描器、SQLite 持久化、快速质量评分、手动决策保存和 JSON / CSV / ZIP 导出；专家 Provider 推理会在后续版本继续增强。</p>
           <div>
             <span><b>桌面框架</b><em>Tauri 2</em></span>
             <span><b>前端</b><em>Svelte 5</em></span>
             <span><b>后端语言</b><em>Rust · Edition 2024</em></span>
-            <span><b>数据目录</b><em>~/.cullify</em></span>
+            <span><b>数据目录</b><em>{appDataDir}</em></span>
           </div>
-        </div>
+        </Card.Root>
       </section>
     </div>
 
@@ -395,28 +769,21 @@
         {/if}
       </div>
       <div class="save-actions">
-        <button class="btn btn-secondary" type="button" onclick={() => void loadSavedConfig()} disabled={isSavingConfig}>放弃改动</button>
-        <button class="btn btn-primary" type="button" onclick={() => void saveChanges()} disabled={isSavingConfig}>
+        <Button variant="outline" onclick={() => void loadSavedConfig()} disabled={isSavingConfig}>
+          <RotateCcwIcon data-icon="inline-start" aria-hidden="true" />
+          放弃改动
+        </Button>
+        <Button onclick={() => void saveChanges()} disabled={isSavingConfig}>
+          <SaveIcon data-icon="inline-start" aria-hidden="true" />
           {isSavingConfig ? '保存中' : '保存到 config.toml'}
-        </button>
+        </Button>
       </div>
     </div>
   </main>
-  <footer class="statusbar">
-    <div class="side">
-      <span class="pip">引擎 · {activeProviderName}</span>
-      <span>{configPath}</span>
-    </div>
-    <div class="side">
-      <span>{dirtyCount ? `${dirtyCount} 项未保存` : '配置已保存'}</span>
-      <span>本地版</span>
-    </div>
-  </footer>
-</div>
 
 <style>
   .settings-wrap {
-    max-width: 920px;
+    max-width: 1180px;
     padding: 36px 48px 64px;
   }
 
@@ -453,342 +820,53 @@
     font-weight: 500;
   }
 
-  .settings-head span,
-  .section-copy {
-    color: var(--muted);
+  .settings-head span {
+    color: var(--muted-foreground);
     font-size: 12px;
   }
 
-  .section-copy {
-    max-width: 72ch;
-    margin: -8px 0 18px;
-    line-height: 1.65;
-  }
-
-  .providers {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-  }
-
-  .provider {
-    display: flex;
-    min-height: 154px;
-    flex-direction: column;
-    gap: 8px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-    padding: 16px;
-    text-align: left;
-  }
-
-  .provider.active {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
-  }
-
-  .provider-row,
-  .provider-meta {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .provider-row strong {
-    font-family: var(--font-display);
-    font-size: 15px;
-    font-weight: 500;
-  }
-
-  .provider-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-transform: uppercase;
-  }
-
-  .provider-status::before {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--meta);
-    content: "";
-  }
-
-  .provider-status.on::before {
-    background: var(--success);
-  }
-
-  .provider-desc {
-    flex: 1;
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.55;
-  }
-
-  .provider-meta {
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 10px;
-  }
-
-  .model-list {
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-  }
-
-  .model-row-item {
-    display: grid;
-    grid-template-columns: 24px 1fr auto auto auto;
-    align-items: center;
-    gap: 14px;
-    border-bottom: 1px solid var(--border-soft);
-    background: var(--surface);
-    padding: 14px 16px;
-  }
-
-  .model-row-item:last-child {
-    border-bottom: 0;
-  }
-
-  .model-row-item.active {
-    background: var(--tag-bg-faint);
-  }
-
-  .model-state {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--border);
-  }
-
-  .model-row-item.active .model-state {
-    background: var(--success);
-  }
-
-  .model-row-item strong {
-    display: block;
-    font-family: var(--font-display);
-    font-size: 15px;
-    font-weight: 500;
-  }
-
-  .model-row-item small {
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 10px;
-  }
-
-  .model-size,
-  .model-speed,
-  .model-action,
-  .form-value {
-    color: var(--fg-2);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-    white-space: pre-line;
-  }
-
-  .model-action {
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--accent);
-    padding: 5px 10px;
-    text-transform: uppercase;
-  }
-
-  .model-row-item.active .model-action {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: var(--accent-on);
-  }
-
-  .form-row {
-    display: grid;
-    grid-template-columns: 210px 1fr 90px;
-    align-items: center;
-    gap: 24px;
-    border-bottom: 1px solid var(--border-soft);
-    padding: 14px 0;
-  }
-
-  .form-row strong {
-    display: block;
-    font-family: var(--font-display);
-    font-size: 14px;
-    font-weight: 500;
-  }
-
-  .form-row small {
-    display: block;
-    margin-top: 3px;
-    color: var(--meta);
-    font-size: 12px;
-  }
-
-  .range-control {
-    display: grid;
-    grid-template-columns: minmax(120px, 280px) 76px;
-    align-items: center;
-    gap: 12px;
-  }
-
-  input[type="range"] {
-    width: 100%;
-    accent-color: var(--accent);
-  }
-
-  .range-control span {
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 12px;
-  }
-
-  select {
-    min-width: 160px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--fg);
-    padding: 7px 12px;
-  }
-
-  .toggle {
-    position: relative;
-    width: 36px;
-    height: 20px;
-    border-radius: 999px;
-    background: var(--border);
-  }
-
-  .toggle::after {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--surface);
-    content: "";
-    transition: transform 0.15s ease;
-  }
-
-  .toggle.on {
-    background: var(--accent);
-  }
-
-  .toggle.on::after {
-    transform: translateX(16px);
-  }
-
-  .shortcuts-table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-
-  .shortcuts-table th,
-  .shortcuts-table td {
-    border-bottom: 1px solid var(--border-soft);
-    padding: 10px 14px;
-    text-align: left;
-  }
-
-  .shortcuts-table th {
-    border-bottom-color: var(--border);
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 1.1px;
-    text-transform: uppercase;
-  }
-
-  .shortcuts-table td:first-child {
-    color: var(--fg);
-    font-family: var(--font-display);
-    font-weight: 500;
-  }
-
-  .shortcuts-table td:nth-child(2) {
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .keys {
-    text-align: right;
-  }
-
-  .kbd-cell {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    border-radius: 4px;
-    background: transparent;
-    padding: 4px 8px;
-  }
-
-  .kbd-cell:hover,
-  .kbd-cell.editing {
-    background: var(--tag-bg-soft);
-  }
-
-  .hint {
-    margin-left: 6px;
-    color: var(--meta);
-    font-family: var(--font-mono);
-    font-size: 9px;
-    text-transform: uppercase;
-  }
-
-  .colophon {
+  :global(.colophon) {
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--surface);
     padding: 24px 28px;
   }
 
-  .colophon p {
+  :global(.colophon p) {
     margin: 0 0 16px;
     border-bottom: 1px solid var(--border-soft);
-    color: var(--muted);
+    color: var(--muted-foreground);
     line-height: 1.7;
     padding-bottom: 14px;
   }
 
-  .colophon div {
+  :global(.colophon div) {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 0 24px;
   }
 
-  .colophon span {
+  :global(.colophon span) {
     display: flex;
     justify-content: space-between;
     border-bottom: 1px solid var(--border-soft);
     padding: 7px 0;
   }
 
-  .colophon b,
-  .colophon em {
+  :global(.colophon b),
+  :global(.colophon em) {
     font-family: var(--font-mono);
     font-size: 11px;
     font-style: normal;
     font-weight: 500;
   }
 
-  .colophon b {
+  :global(.colophon b) {
     color: var(--meta);
     text-transform: uppercase;
   }
 
-  .colophon em {
+  :global(.colophon em) {
     color: var(--fg-2);
   }
 
@@ -844,18 +922,8 @@
   }
 
   @media (max-width: 1000px) {
-    .providers {
-      grid-template-columns: 1fr;
-    }
-
-    .model-row-item,
-    .form-row {
-      grid-template-columns: 1fr;
-      align-items: start;
-    }
-
-    .save-bar,
-    .settings-head {
+    .settings-head,
+    .save-bar {
       align-items: flex-start;
       flex-direction: column;
     }
@@ -866,7 +934,7 @@
       padding: 24px 18px 96px;
     }
 
-    .colophon div {
+    :global(.colophon div) {
       grid-template-columns: 1fr;
     }
   }

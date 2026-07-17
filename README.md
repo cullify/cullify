@@ -31,12 +31,12 @@ RAW 解码、VLM 深度分析、模型下载/校验/回滚、AI PDF 报告和自
 
 ## 数据位置
 
-应用数据目录来自系统标准 data dir，并落在 `com.cullify` 子目录下：
+应用数据目录由 Tauri 的 `app.path().app_data_dir()` 解析，并落在 `com.cullify.desktop` 对应的应用数据目录下：
 
-- SQLite: `com.cullify/cullify.db`
-- 配置: `com.cullify/config.toml`
-- 缩略图缓存: `com.cullify/thumbnails/<project_id>/`
-- 默认导出根目录: `com.cullify/exports/`
+- SQLite: `com.cullify.desktop/cullify.db`
+- 配置: `com.cullify.desktop/config.toml`
+- 缩略图缓存: `com.cullify.desktop/thumbnails/<project_id>/`
+- 默认导出根目录: `com.cullify.desktop/exports/`
 
 正常 UI 导出会让用户选择目标文件夹；默认导出根目录用于后端兜底和测试。
 

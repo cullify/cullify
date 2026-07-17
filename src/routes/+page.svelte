@@ -1,7 +1,6 @@
 <script lang="ts">
   import { resolve } from '$app/paths';
-  import { onMount } from 'svelte';
-  import AppShell from '$lib/components/AppShell.svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     backendProjectToProject,
     createProjectFromPickedFolderWithOutcome,
@@ -12,6 +11,16 @@
     tryListProjects
   } from '$lib/backend';
   import { projects as mockProjects, shortcuts } from '$lib/mockData';
+  import { Alert, AlertDescription } from '$lib/components/ui/alert';
+  import { Badge } from '$lib/components/ui/badge';
+  import { Button } from '$lib/components/ui/button';
+  import * as Card from '$lib/components/ui/card';
+  import { Kbd } from '$lib/components/ui/kbd';
+  import { getShellContext } from '$lib/shell.svelte';
+  import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
+  import PencilIcon from '@lucide/svelte/icons/pencil';
+  import PlusIcon from '@lucide/svelte/icons/plus';
+  import Trash2Icon from '@lucide/svelte/icons/trash-2';
   import type { CullMode, Project, Shortcut } from '$lib/types';
 
   type ModeCard = {
@@ -75,10 +84,37 @@
   const totalCulled = $derived(projects.reduce((total, project) => total + project.culled, 0));
   const cullRatio = $derived(totalProcessed ? Math.round((totalCulled / totalProcessed) * 100) : 0);
   const statusSummary = $derived(isDemoData ? '浏览器演示数据' : `${projects.length} 个本地项目`);
+  const shell = getShellContext();
 
   onMount(() => {
     void loadShortcuts();
     void refreshProjects();
+  });
+
+  onDestroy(() => {
+    shell.resetPage();
+  });
+
+  $effect(() => {
+    shell.configure({
+      active: 'dashboard',
+      title: '主控台',
+      subtitle: '本地离线 AI 照片选片 · 数据不出本机',
+      recentProjects: projects,
+      cullCount: String(totalProcessed),
+      showDefaultSidebarDetails: true,
+      sidebarExtra: null,
+      footer: {
+        photo: `照片 ${totalProcessed.toLocaleString()} / ${totalProcessed.toLocaleString()}`,
+        analysis: isCreating ? '正在扫描并分析照片' : `${statusSummary} · 淘汰 ${cullRatio}%`,
+        model: '快速模式 · 无模型占用',
+        resources: {
+          cpu: isCreating ? 'CPU 扫描中' : 'CPU 待机',
+          memory: isDemoData ? '内存 演示数据' : '内存 本地索引',
+          gpu: '显存 未占用'
+        }
+      }
+    });
   });
 
   async function refreshProjects() {
@@ -228,8 +264,7 @@
   }
 </script>
 
-<AppShell active="dashboard" recentProjects={projects} cullCount={String(totalProcessed)} statusLeft={['引擎就绪 · 快速模式可用', statusSummary, '数据 · 本机']}>
-  <main class="app-main scroll">
+<main class="app-main scroll">
     <div class="page-pad">
       <header class="topbar">
         <div>
@@ -237,17 +272,21 @@
           <p class="page-lede">本地离线 AI 照片选片 · 数据不出本机</p>
         </div>
         <div class="actions">
-          <button class="btn btn-secondary" type="button" onclick={() => createFromFolder('quick')} disabled={isCreating}>
+          <Button variant="outline" onclick={() => createFromFolder('quick')} disabled={isCreating}>
+            <FolderOpenIcon data-icon="inline-start" aria-hidden="true" />
             打开文件夹
-          </button>
-          <button class="btn btn-primary" type="button" onclick={() => createFromFolder('quick')} disabled={isCreating}>
+          </Button>
+          <Button onclick={() => createFromFolder('quick')} disabled={isCreating}>
+            <PlusIcon data-icon="inline-start" aria-hidden="true" />
             {isCreating ? '扫描中' : '新建项目'}
-          </button>
+          </Button>
         </div>
       </header>
 
       {#if createMessage}
-        <div class={`import-note ${createMessageTone}`} role="status">{createMessage}</div>
+        <Alert class={`import-note ${createMessageTone}`} variant={createMessageTone === 'error' ? 'destructive' : 'default'}>
+          <AlertDescription>{createMessage}</AlertDescription>
+        </Alert>
       {/if}
 
       <section>
@@ -261,16 +300,16 @@
 
         <div class="modes">
           {#each modeCards as mode (mode.id)}
-            <button
+            <Button
               class={['mode-card', !mode.available && 'mode-card-planned'].filter(Boolean).join(' ')}
-              type="button"
+              variant="ghost"
               onclick={() => chooseMode(mode)}
               disabled={isCreating}
               aria-describedby={`${mode.id}-mode-desc`}
             >
               <span class="mode-head">
                 <span class="mode-num">{mode.label}</span>
-                <span class={['mode-status', mode.available ? 'ready' : 'planned'].join(' ')}>{mode.status}</span>
+                <Badge class={['mode-status', mode.available ? 'ready' : 'planned'].join(' ')} variant={mode.available ? 'secondary' : 'outline'}>{mode.status}</Badge>
               </span>
               <span class="mode-name">{mode.name}</span>
               <p id={`${mode.id}-mode-desc`}>{mode.desc}</p>
@@ -278,28 +317,28 @@
                 <span>{mode.left}</span>
                 <span>{mode.right}</span>
               </span>
-            </button>
+            </Button>
           {/each}
         </div>
       </section>
 
       <section class="metrics" aria-label="累计指标">
-        <div>
+        <Card.Root size="sm">
           <strong>{totalProcessed.toLocaleString()}</strong>
           <span>累计处理照片</span>
-        </div>
-        <div>
+        </Card.Root>
+        <Card.Root size="sm">
           <strong>{totalCulled.toLocaleString()}</strong>
           <span>累计淘汰 · {cullRatio}%</span>
-        </div>
-        <div>
+        </Card.Root>
+        <Card.Root size="sm">
           <strong>本地</strong>
           <span>快速评分引擎</span>
-        </div>
-        <div>
+        </Card.Root>
+        <Card.Root size="sm">
           <strong>离线</strong>
           <span>照片不出本机</span>
-        </div>
+        </Card.Root>
       </section>
 
       <section>
@@ -309,41 +348,44 @@
             <h2 class="section-title">最近项目</h2>
             <p class="section-lede">点击任意行进入照片挑选界面</p>
           </div>
-          <a class="section-link" href={resolve('/cull')}>查看全部</a>
+          <Button class="section-link" href={resolve('/cull')} variant="link" size="sm">查看全部</Button>
         </div>
 
         {#if projects.length}
           <div class="projects">
             {#each projects as project (project.id)}
-              <div class="project-row">
-                <a class="project-name-link" href={resolve('/cull')} onclick={() => openProject(project)}>
+              <Card.Root class="project-row" size="sm">
+                <Button class="project-name-link" href={resolve('/cull')} variant="ghost" onclick={() => openProject(project)}>
                   <strong>{project.name}</strong>
                   <small>{project.path}</small>
-                </a>
-                <span><span class={tagClass(project.mode)}>{project.mode}</span></span>
+                </Button>
+                <span><Badge class={tagClass(project.mode)} variant="secondary">{project.mode}</Badge></span>
                 <span class="col strong project-total">{project.total.toLocaleString()}</span>
                 <span class="col project-kept">保留 {project.kept || '—'}</span>
                 <span class="col muted project-cull">淘汰 {project.culled || '—'}</span>
                 <span class="col project-state"><span class={statusClass(project.status)}>{project.statusLabel}</span></span>
                 <span class="project-actions">
-                  <button type="button" onclick={() => renameExistingProject(project)} disabled={isCreating}>
+                  <Button variant="outline" size="sm" onclick={() => renameExistingProject(project)} disabled={isCreating}>
+                    <PencilIcon data-icon="inline-start" aria-hidden="true" />
                     重命名
-                  </button>
-                  <button type="button" class="danger" onclick={() => deleteExistingProject(project)} disabled={isCreating}>
+                  </Button>
+                  <Button variant="destructive" size="sm" onclick={() => deleteExistingProject(project)} disabled={isCreating}>
+                    <Trash2Icon data-icon="inline-start" aria-hidden="true" />
                     删除
-                  </button>
+                  </Button>
                 </span>
-              </div>
+              </Card.Root>
             {/each}
           </div>
         {:else}
-          <div class="project-empty">
+          <Card.Root class="project-empty">
             <strong>还没有本地项目</strong>
             <span>点击“新建项目”选择照片文件夹，Cullify 会在本机扫描、评分并生成可导出的选片项目。</span>
-            <button class="btn btn-secondary" type="button" onclick={() => createFromFolder('quick')} disabled={isCreating}>
+            <Button variant="outline" onclick={() => createFromFolder('quick')} disabled={isCreating}>
+              <FolderOpenIcon data-icon="inline-start" aria-hidden="true" />
               选择照片文件夹
-            </button>
-          </div>
+            </Button>
+          </Card.Root>
         {/if}
       </section>
 
@@ -362,7 +404,7 @@
               <span>{shortcut.action}</span>
               <span class="keys">
                 {#each shortcut.keys as key (`${shortcut.id}-${key}`)}
-                  <span class="kbd">{key}</span>
+                  <Kbd class="kbd">{key}</Kbd>
                 {/each}
               </span>
             </div>
@@ -371,7 +413,6 @@
       </section>
     </div>
   </main>
-</AppShell>
 
 <style>
   .actions {
@@ -384,7 +425,7 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--surface);
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 13px;
     line-height: 1.45;
     padding: 10px 12px;
@@ -407,34 +448,38 @@
     margin-bottom: 36px;
   }
 
-  .mode-card {
+  :global(.mode-card) {
     display: flex;
+    align-items: stretch;
+    justify-content: flex-start;
     min-height: 154px;
     flex-direction: column;
     gap: 10px;
+    height: auto;
     color: inherit;
     border: 1px solid var(--border);
     border-radius: 12px;
     background: var(--surface);
     padding: 20px 20px 18px;
     text-align: left;
+    white-space: normal;
     transition: box-shadow 0.2s ease;
   }
 
-  .mode-card:hover {
+  :global(.mode-card:hover) {
     box-shadow: var(--shadow-soft);
   }
 
-  .mode-card-planned {
+  :global(.mode-card-planned) {
     background:
       linear-gradient(135deg, color-mix(in srgb, var(--surface) 88%, var(--bg)) 0%, var(--surface) 100%);
   }
 
-  .mode-card-planned:hover {
+  :global(.mode-card-planned:hover) {
     box-shadow: 0 0 0 1px var(--border);
   }
 
-  .mode-card:disabled {
+  :global(.mode-card:disabled) {
     cursor: wait;
     opacity: 0.62;
   }
@@ -487,10 +532,10 @@
     line-height: 1.2;
   }
 
-  .mode-card p {
+  :global(.mode-card p) {
     flex: 1;
     margin: 0;
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 13px;
     line-height: 1.55;
   }
@@ -512,12 +557,12 @@
     padding: 18px 0;
   }
 
-  .metrics div {
+  :global(.metrics [data-slot="card"]) {
     border-right: 1px solid var(--border-soft);
     padding: 0 20px;
   }
 
-  .metrics div:last-child {
+  :global(.metrics [data-slot="card"]:last-child) {
     border-right: 0;
   }
 
@@ -547,7 +592,7 @@
     border-top: 1px solid var(--border);
   }
 
-  .project-empty {
+  :global(.project-empty) {
     display: flex;
     min-height: 154px;
     flex-direction: column;
@@ -557,24 +602,24 @@
     border: 1px dashed var(--border);
     border-radius: 8px;
     background: var(--surface);
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 13px;
     line-height: 1.55;
     padding: 22px;
   }
 
-  .project-empty strong {
+  :global(.project-empty strong) {
     color: var(--fg);
     font-family: var(--font-display);
     font-size: 18px;
     font-weight: 500;
   }
 
-  .project-empty span {
+  :global(.project-empty span) {
     max-width: 58ch;
   }
 
-  .project-row {
+  :global(.project-row) {
     display: grid;
     grid-template-columns: 1.4fr 80px 100px 100px 100px 110px 132px;
     align-items: center;
@@ -584,15 +629,20 @@
     transition: background 0.12s ease;
   }
 
-  .project-row:hover {
+  :global(.project-row:hover) {
     background: var(--surface);
   }
 
-  .project-name-link {
+  :global(.project-name-link) {
+    display: block;
+    height: auto;
+    justify-content: flex-start;
     min-width: 0;
+    text-align: left;
+    white-space: normal;
   }
 
-  .project-row strong {
+  :global(.project-row strong) {
     display: block;
     color: var(--fg);
     font-family: var(--font-display);
@@ -600,7 +650,7 @@
     font-weight: 500;
   }
 
-  .project-row small {
+  :global(.project-row small) {
     display: block;
     overflow: hidden;
     color: var(--meta);
@@ -616,7 +666,7 @@
     gap: 6px;
   }
 
-  .project-actions button {
+  :global(.project-actions [data-slot="button"]) {
     border: 1px solid var(--border);
     border-radius: 5px;
     background: var(--surface);
@@ -626,15 +676,11 @@
     padding: 5px 8px;
   }
 
-  .project-actions button:hover {
+  :global(.project-actions [data-slot="button"]:hover) {
     background: var(--surface-warm);
   }
 
-  .project-actions button.danger {
-    color: var(--danger);
-  }
-
-  .project-actions button:disabled {
+  :global(.project-actions [data-slot="button"]:disabled) {
     cursor: wait;
     opacity: 0.55;
   }
@@ -693,7 +739,7 @@
     justify-content: space-between;
     gap: 12px;
     border-bottom: 1px solid var(--border-soft);
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     padding: 6px 0;
   }

@@ -20,12 +20,12 @@ pub enum AppError {
     TomlSer(#[from] toml::ser::Error),
     #[error("json serialize error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("http error: {0}")]
+    Http(#[from] reqwest::Error),
     #[error("zip error: {0}")]
     Zip(#[from] zip::result::ZipError),
     #[error("tauri runtime error: {0}")]
     Tauri(#[from] tauri::Error),
-    #[error("app data directory is not available")]
-    MissingDataDir,
     #[error("project not found: {0}")]
     ProjectNotFound(String),
     #[error("folder does not exist or is not a directory: {0}")]
@@ -44,6 +44,10 @@ pub enum AppError {
     EmptyExport(String),
     #[error("source photo is missing: {0}")]
     SourcePhotoMissing(String),
+    #[error("invalid model download request: {0}")]
+    InvalidModelDownload(String),
+    #[error("model download cancelled: {0}")]
+    ModelDownloadCancelled(String),
 }
 
 impl From<AppError> for String {
